@@ -17,7 +17,9 @@ const TokenIterator = struct {
         while (true) {
             if (self.wordIterator == null) {
                 const line = stdin.readUntilDelimiterOrEof(&self.buffer, '\n') catch unreachable;
-                if (line == null) return null;
+                if (line == null) {
+                    return null;
+                }
                 self.wordIterator = std.mem.tokenizeScalar(u8, line.?, ' ');
             }
 
@@ -46,16 +48,18 @@ const ExpressionIterator = struct {
 
     fn next(self: *ExpressionIterator, allocator: anytype, stdin: anytype) ?Expression {
         const token = self.tokenIterator.next(stdin);
-        if (token == null) return null;
+        if (token == null) {
+            return null;
+        }
 
         if (token.?[0] == '(') {
             var list = std.ArrayList(Expression).init(allocator);
 
             while (self.next(allocator, stdin)) |subexpression| {
-                switch (subexpression) {
-                    .end => break,
-                    else => list.append(subexpression) catch unreachable,
+                if (subexpression == .end) {
+                    break;
                 }
+                list.append(subexpression) catch unreachable;
             }
 
             return Expression{ .list = list.items };
@@ -63,6 +67,16 @@ const ExpressionIterator = struct {
 
         if (token.?[0] == ')') {
             return Expression{ .end = {} };
+        }
+
+        if (token.?[0] == '\'') {
+            var list = std.ArrayList(Expression).init(allocator);
+
+            const subexpression = self.next(allocator, stdin).?;
+            list.append(Expression{ .word = "quote" }) catch unreachable;
+            list.append(subexpression) catch unreachable;
+
+            return Expression{ .list = list.items };
         }
 
         const number = std.fmt.parseInt(i32, token.?, 10) catch {
@@ -74,52 +88,68 @@ const ExpressionIterator = struct {
     }
 };
 
-fn evalList(store: std.StringHashMap(Expression), list: []const Expression) Expression {
-    const function = eval(store, list[0]);
+fn evalList(allocator: anytype, store: std.StringHashMap(Expression), list: []const Expression) Expression {
+    const function = eval(allocator, store, list[0]);
     switch (function) {
         .builtin => |builtin| {
             if (std.mem.eql(u8, builtin, "+")) {
                 var result: i32 = 0;
                 for (list[1..]) |argument| {
-                    result += eval(store, argument).number; // safety
+                    const number = eval(allocator, store, argument);
+                    if (number == .number) {
+                        result += eval(allocator, store, argument).number;
+                    } else unreachable;
                 }
                 return Expression{ .number = result };
+            } else if (std.mem.eql(u8, builtin, "quote")) {
+                return list[1];
+            } else if (std.mem.eql(u8, builtin, "cons")) {
+                const head = eval(allocator, store, list[1]);
+                const tail = eval(allocator, store, list[2]);
+                var newList = std.ArrayList(Expression).init(allocator);
+
+                newList.append(head) catch unreachable;
+                if (tail == .list) {
+                    newList.appendSlice(tail.list) catch unreachable;
+                } else unreachable;
+
+                return Expression{ .list = newList.items };
             } else unreachable;
         },
         else => unreachable,
     }
 }
 
-fn eval(store: std.StringHashMap(Expression), expression: Expression) Expression {
+fn eval(allocator: anytype, store: std.StringHashMap(Expression), expression: Expression) Expression {
     return switch (expression) {
         .number => expression,
         .word => |word| store.get(word).?,
-        .list => |list| if (list.len == 0) expression else evalList(store, list),
+        .list => |list| if (list.len == 0) expression else evalList(allocator, store, list),
         else => unreachable,
     };
 }
 
-fn print(stdout: anytype, expression: Expression) !void {
+fn print(stdout: anytype, expression: Expression) void {
     switch (expression) {
-        .number => |number| try stdout.print("{d}", .{number}),
-        .word => |word| try stdout.print("{s}", .{word}),
+        .number => |number| stdout.print("{d}", .{number}) catch unreachable,
+        .word => |word| stdout.print("{s}", .{word}) catch unreachable,
         .list => |list| {
-            try stdout.writeByte('(');
+            stdout.writeByte('(') catch unreachable;
             if (list.len > 0) {
-                try print(stdout, list[0]);
+                print(stdout, list[0]);
                 for (list[1..]) |subexpression| {
-                    try stdout.writeByte(' ');
-                    try print(stdout, subexpression);
+                    stdout.writeByte(' ') catch unreachable;
+                    print(stdout, subexpression);
                 }
             }
-            try stdout.writeByte(')');
+            stdout.writeByte(')') catch unreachable;
         },
-        .builtin => |builtin| try stdout.print("builtin {s}", .{builtin}),
+        .builtin => |builtin| stdout.print("builtin {s}", .{builtin}) catch unreachable,
         .end => unreachable,
     }
 }
 
-pub fn main() !void {
+pub fn main() void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -128,7 +158,9 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
     var store = std.StringHashMap(Expression).init(allocator);
-    try store.put("+", Expression{ .builtin = "+" });
+    store.put("+", Expression{ .builtin = "+" }) catch unreachable;
+    store.put("quote", Expression{ .builtin = "quote" }) catch unreachable;
+    store.put("cons", Expression{ .builtin = "cons" }) catch unreachable;
 
     const tokenIterator = TokenIterator{
         .buffer = undefined,
@@ -138,7 +170,7 @@ pub fn main() !void {
 
     var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator };
     while (expressionIterator.next(allocator, stdin)) |expression| {
-        try print(stdout, eval(store, expression));
-        try stdout.writeByte('\n');
+        print(stdout, eval(allocator, store, expression));
+        stdout.writeByte('\n') catch unreachable;
     }
 }
