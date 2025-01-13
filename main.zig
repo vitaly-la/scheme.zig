@@ -1,10 +1,17 @@
 const std = @import("std");
 
+const Function = struct {
+    name: []const u8,
+    args: []const Expression,
+    body: Expression,
+};
+
 const Expression = union(enum) {
     number: i32,
     word: []const u8,
     list: []const Expression,
     builtin: []const u8,
+    function: *Function,
     end,
 };
 
@@ -106,8 +113,15 @@ const ExpressionIterator = struct {
 };
 
 fn evalList(allocator: anytype, scope: *Scope, list: []const Expression) Expression {
-    const function = eval(allocator, scope, list[0]);
-    switch (function) {
+    const operation = eval(allocator, scope, list[0]);
+    switch (operation) {
+        .function => |function| {
+            var functionScope = Scope.init(allocator, scope);
+            for (0.., function.args) |idx, arg| {
+                functionScope.put(arg.word, eval(allocator, scope, list[idx + 1]));
+            }
+            return eval(allocator, &functionScope, function.body);
+        },
         .builtin => |builtin| {
             if (std.mem.eql(u8, builtin, "+")) {
                 var result: i32 = 0;
@@ -132,10 +146,19 @@ fn evalList(allocator: anytype, scope: *Scope, list: []const Expression) Express
 
                 return Expression{ .list = newList.items };
             } else if (std.mem.eql(u8, builtin, "define")) {
-                if (list[1] == .word) {
-                    scope.put(list[1].word, eval(allocator, scope, list[2]));
-                } else unreachable;
-                return Expression{ .word = list[1].word };
+                switch (list[1]) {
+                    .word => |word| {
+                        scope.put(word, eval(allocator, scope, list[2]));
+                        return list[1];
+                    },
+                    .list => |sublist| {
+                        const function = allocator.create(Function) catch unreachable;
+                        function.* = Function{ .name = sublist[0].word, .args = sublist[1..], .body = list[2] };
+                        scope.put(sublist[0].word, Expression{ .function = function });
+                        return sublist[0];
+                    },
+                    else => unreachable,
+                }
             } else unreachable;
         },
         else => unreachable,
@@ -167,6 +190,7 @@ fn print(stdout: anytype, expression: Expression) void {
             stdout.writeByte(')') catch unreachable;
         },
         .builtin => |builtin| stdout.print("builtin {s}", .{builtin}) catch unreachable,
+        .function => |function| stdout.print("function {s}", .{function.name}) catch unreachable,
         .end => unreachable,
     }
 }
