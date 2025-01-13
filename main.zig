@@ -1,5 +1,26 @@
 const std = @import("std");
 
+const Builtin = enum {
+    quote,
+    define,
+    if_,
+    plus,
+    minus,
+    times,
+    equals,
+    less,
+    cons,
+    car,
+    cdr,
+    length,
+    null_,
+
+    fn toString(self: Builtin) []const u8 {
+        const builtins = [_][]const u8{ "quote", "define", "if", "+", "-", "*", "=", "<", "cons", "car", "cdr", "length", "null" };
+        return builtins[@intFromEnum(self)];
+    }
+};
+
 const Function = struct {
     name: []const u8,
     args: []const Expression,
@@ -10,7 +31,7 @@ const Expression = union(enum) {
     number: i32,
     word: []const u8,
     list: []const Expression,
-    builtin: []const u8,
+    builtin: Builtin,
     function: *Function,
     end,
 };
@@ -122,30 +143,9 @@ fn evalList(allocator: anytype, scope: *Scope, list: []const Expression) Express
             }
             return eval(allocator, &functionScope, function.body);
         },
-        .builtin => |builtin| {
-            if (std.mem.eql(u8, builtin, "+")) {
-                var result: i32 = 0;
-                for (list[1..]) |argument| {
-                    const number = eval(allocator, scope, argument);
-                    if (number == .number) {
-                        result += eval(allocator, scope, argument).number;
-                    } else unreachable;
-                }
-                return Expression{ .number = result };
-            } else if (std.mem.eql(u8, builtin, "quote")) {
-                return list[1];
-            } else if (std.mem.eql(u8, builtin, "cons")) {
-                const head = eval(allocator, scope, list[1]);
-                const tail = eval(allocator, scope, list[2]);
-                var newList = std.ArrayList(Expression).init(allocator);
-
-                newList.append(head) catch unreachable;
-                if (tail == .list) {
-                    newList.appendSlice(tail.list) catch unreachable;
-                } else unreachable;
-
-                return Expression{ .list = newList.items };
-            } else if (std.mem.eql(u8, builtin, "define")) {
+        .builtin => |builtin| switch (builtin) {
+            .quote => return list[1],
+            .define => {
                 switch (list[1]) {
                     .word => |word| {
                         scope.put(word, eval(allocator, scope, list[2]));
@@ -159,7 +159,82 @@ fn evalList(allocator: anytype, scope: *Scope, list: []const Expression) Express
                     },
                     else => unreachable,
                 }
-            } else unreachable;
+            },
+            .if_ => {
+                const condition = eval(allocator, scope, list[1]);
+                if (condition.number == 0) {
+                    return eval(allocator, scope, list[3]);
+                } else {
+                    return eval(allocator, scope, list[2]);
+                }
+            },
+            .plus => {
+                var result: i32 = 0;
+                for (list[1..]) |argument| {
+                    const number = eval(allocator, scope, argument);
+                    if (number == .number) {
+                        result += number.number;
+                    } else unreachable;
+                }
+                return Expression{ .number = result };
+            },
+            .minus => {
+                var result: i32 = 0;
+                for (0.., list[1..]) |idx, argument| {
+                    const number = eval(allocator, scope, argument);
+                    if (number == .number) {
+                        if (list.len > 2 and idx == 0) {
+                            result += number.number;
+                        } else {
+                            result -= number.number;
+                        }
+                    } else unreachable;
+                }
+                return Expression{ .number = result };
+            },
+            .times => {
+                var result: i32 = 1;
+                for (list[1..]) |argument| {
+                    const number = eval(allocator, scope, argument);
+                    if (number == .number) {
+                        result *= number.number;
+                    } else unreachable;
+                }
+                return Expression{ .number = result };
+            },
+            .equals => {
+                const head = eval(allocator, scope, list[1]);
+                if (head != .number) unreachable;
+                for (list[2..]) |argument| {
+                    const number = eval(allocator, scope, argument);
+                    if (number == .number and number.number != head.number) {
+                        return Expression{ .number = 0 };
+                    }
+                }
+                return Expression{ .number = 1 };
+            },
+            .less => {
+                const fst = eval(allocator, scope, list[1]);
+                const snd = eval(allocator, scope, list[2]);
+                if (fst != .number or snd != .number) unreachable;
+                return Expression{ .number = if (fst.number < snd.number) 1 else 0 };
+            },
+            .cons => {
+                const head = eval(allocator, scope, list[1]);
+                const tail = eval(allocator, scope, list[2]);
+                var newList = std.ArrayList(Expression).init(allocator);
+
+                newList.append(head) catch unreachable;
+                if (tail == .list) {
+                    newList.appendSlice(tail.list) catch unreachable;
+                } else unreachable;
+
+                return Expression{ .list = newList.items };
+            },
+            .car => return eval(allocator, scope, list[1]).list[0],
+            .cdr => return Expression{ .list = eval(allocator, scope, list[1]).list[1..] },
+            .length => return Expression{ .number = @intCast(eval(allocator, scope, list[1]).list.len) },
+            .null_ => return Expression{ .number = if (eval(allocator, scope, list[1]).list.len == 0) 1 else 0 },
         },
         else => unreachable,
     }
@@ -189,7 +264,7 @@ fn print(stdout: anytype, expression: Expression) void {
             }
             stdout.writeByte(')') catch unreachable;
         },
-        .builtin => |builtin| stdout.print("builtin {s}", .{builtin}) catch unreachable,
+        .builtin => |builtin| stdout.print("builtin {s}", .{builtin.toString()}) catch unreachable,
         .function => |function| stdout.print("function {s}", .{function.name}) catch unreachable,
         .end => unreachable,
     }
@@ -204,14 +279,9 @@ pub fn main() void {
     const stdout = std.io.getStdOut().writer();
 
     var scope = Scope.init(allocator, null);
-    const builtins = [_][]const u8{
-        "+",
-        "quote",
-        "cons",
-        "define",
-    };
-    for (builtins) |builtin| {
-        scope.put(builtin, Expression{ .builtin = builtin });
+    for (0..@typeInfo(Builtin).Enum.fields.len) |idx| {
+        const builtin: Builtin = @enumFromInt(idx);
+        scope.put(builtin.toString(), Expression{ .builtin = builtin });
     }
 
     const tokenIterator = TokenIterator{
