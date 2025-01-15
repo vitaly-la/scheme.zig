@@ -23,24 +23,30 @@ const Builtin = enum {
 
 const Function = struct {
     name: []const u8,
-    args: []const Expression,
+    arguments: Expression,
     body: Expression,
+};
+
+const Cons = struct {
+    car: Expression,
+    cdr: Expression,
 };
 
 const Expression = union(enum) {
     number: i32,
     word: []const u8,
-    list: []const Expression,
+    nil,
+    cons: *Cons,
     builtin: Builtin,
-    function: *Function,
+    function: *const Function,
     end,
 };
 
 const Scope = struct {
-    parent: ?*Scope,
+    parent: ?*const Scope,
     store: std.StringHashMap(Expression),
 
-    fn init(allocator: anytype, parent: ?*Scope) Scope {
+    fn init(allocator: anytype, parent: ?*const Scope) Scope {
         return Scope{ .parent = parent, .store = std.StringHashMap(Expression).init(allocator) };
     }
 
@@ -98,16 +104,20 @@ const ExpressionIterator = struct {
         }
 
         if (token.?[0] == '(') {
-            var list = std.ArrayList(Expression).init(allocator);
+            var list = Expression{ .nil = {} };
+            var tail = &list;
 
             while (self.next(allocator, stdin)) |subexpression| {
                 if (subexpression == .end) {
                     break;
                 }
-                list.append(subexpression) catch unreachable;
+                const item = Expression{ .cons = allocator.create(Cons) catch unreachable };
+                item.cons.* = Cons{ .car = subexpression, .cdr = Expression{ .nil = {} } };
+                tail.* = item;
+                tail = &item.cons.cdr;
             }
 
-            return Expression{ .list = list.items };
+            return list;
         }
 
         if (token.?[0] == ')') {
@@ -115,13 +125,10 @@ const ExpressionIterator = struct {
         }
 
         if (token.?[0] == '\'') {
-            var list = std.ArrayList(Expression).init(allocator);
-
+            const cons = Expression{ .cons = allocator.create(Cons) catch unreachable };
             const subexpression = self.next(allocator, stdin).?;
-            list.append(Expression{ .word = "quote" }) catch unreachable;
-            list.append(subexpression) catch unreachable;
-
-            return Expression{ .list = list.items };
+            cons.cons.* = Cons{ .car = Expression{ .word = "quote" }, .cdr = subexpression };
+            return cons;
         }
 
         const number = std.fmt.parseInt(i32, token.?, 10) catch {
@@ -133,108 +140,109 @@ const ExpressionIterator = struct {
     }
 };
 
-fn evalList(allocator: anytype, scope: *Scope, list: []const Expression) Expression {
-    const operation = eval(allocator, scope, list[0]);
+fn evalCons(allocator: anytype, scope: *Scope, cons: Cons) Expression {
+    const operation = eval(allocator, scope, cons.car);
+    var items = cons.cdr;
     switch (operation) {
         .function => |function| {
             var functionScope = Scope.init(allocator, scope);
-            for (0.., function.args) |idx, arg| {
-                functionScope.put(arg.word, eval(allocator, scope, list[idx + 1]));
+            var arguments = function.arguments;
+            while (arguments != .nil) {
+                functionScope.put(arguments.cons.car.word, eval(allocator, scope, items.cons.car));
+                arguments = arguments.cons.cdr;
+                items = items.cons.cdr;
             }
             return eval(allocator, &functionScope, function.body);
         },
         .builtin => |builtin| switch (builtin) {
-            .quote => return list[1],
+            .quote => return items,
             .define => {
-                switch (list[1]) {
+                switch (items.cons.car) {
                     .word => |word| {
-                        scope.put(word, eval(allocator, scope, list[2]));
-                        return list[1];
+                        scope.put(word, eval(allocator, scope, items.cons.cdr.cons.car));
+                        return items.cons.car;
                     },
-                    .list => |sublist| {
+                    .cons => |definition| {
                         const function = allocator.create(Function) catch unreachable;
-                        function.* = Function{ .name = sublist[0].word, .args = sublist[1..], .body = list[2] };
-                        scope.put(sublist[0].word, Expression{ .function = function });
-                        return sublist[0];
+                        function.* = Function{ .name = definition.car.word, .arguments = definition.cdr, .body = items.cons.cdr.cons.car };
+                        scope.put(definition.car.word, Expression{ .function = function });
+                        return definition.car;
                     },
                     else => unreachable,
                 }
             },
             .if_ => {
-                const condition = eval(allocator, scope, list[1]);
+                const condition = eval(allocator, scope, items.cons.car);
                 if (condition.number == 0) {
-                    return eval(allocator, scope, list[3]);
+                    return eval(allocator, scope, items.cons.cdr.cons.cdr.cons.car);
                 } else {
-                    return eval(allocator, scope, list[2]);
+                    return eval(allocator, scope, items.cons.cdr.cons.car);
                 }
             },
             .plus => {
                 var result: i32 = 0;
-                for (list[1..]) |argument| {
-                    const number = eval(allocator, scope, argument);
-                    if (number == .number) {
-                        result += number.number;
-                    } else unreachable;
+                while (items != .nil) : (items = items.cons.cdr) {
+                    const number = eval(allocator, scope, items.cons.car);
+                    result += number.number;
                 }
                 return Expression{ .number = result };
             },
             .minus => {
                 var result: i32 = 0;
-                for (0.., list[1..]) |idx, argument| {
-                    const number = eval(allocator, scope, argument);
-                    if (number == .number) {
-                        if (list.len > 2 and idx == 0) {
-                            result += number.number;
-                        } else {
-                            result -= number.number;
-                        }
-                    } else unreachable;
+                var fst = true;
+                while (items != .nil) : (items = items.cons.cdr) {
+                    const number = eval(allocator, scope, items.cons.car);
+                    if (fst and items.cons.cdr != .nil) {
+                        result += number.number;
+                    } else {
+                        result -= number.number;
+                    }
+                    fst = false;
                 }
                 return Expression{ .number = result };
             },
             .times => {
                 var result: i32 = 1;
-                for (list[1..]) |argument| {
-                    const number = eval(allocator, scope, argument);
-                    if (number == .number) {
-                        result *= number.number;
-                    } else unreachable;
+                while (items != .nil) : (items = items.cons.cdr) {
+                    const number = eval(allocator, scope, items.cons.car);
+                    result *= number.number;
                 }
                 return Expression{ .number = result };
             },
             .equals => {
-                const head = eval(allocator, scope, list[1]);
-                if (head != .number) unreachable;
-                for (list[2..]) |argument| {
-                    const number = eval(allocator, scope, argument);
-                    if (number == .number and number.number != head.number) {
+                const head = eval(allocator, scope, items.cons.car);
+                items = items.cons.cdr;
+                while (items != .nil) : (items = items.cons.cdr) {
+                    const number = eval(allocator, scope, items.cons.car);
+                    if (number.number != head.number) {
                         return Expression{ .number = 0 };
                     }
                 }
                 return Expression{ .number = 1 };
             },
             .less => {
-                const fst = eval(allocator, scope, list[1]);
-                const snd = eval(allocator, scope, list[2]);
-                if (fst != .number or snd != .number) unreachable;
+                const fst = eval(allocator, scope, items.cons.car);
+                const snd = eval(allocator, scope, items.cons.cdr.cons.car);
                 return Expression{ .number = if (fst.number < snd.number) 1 else 0 };
             },
             .cons => {
-                const head = eval(allocator, scope, list[1]);
-                const tail = eval(allocator, scope, list[2]);
-                var newList = std.ArrayList(Expression).init(allocator);
-
-                newList.append(head) catch unreachable;
-                if (tail == .list) {
-                    newList.appendSlice(tail.list) catch unreachable;
-                } else unreachable;
-
-                return Expression{ .list = newList.items };
+                const fst = eval(allocator, scope, items.cons.car);
+                const snd = eval(allocator, scope, items.cons.cdr.cons.car);
+                const expression = Expression{ .cons = allocator.create(Cons) catch unreachable };
+                expression.cons.* = Cons{ .car = fst, .cdr = snd };
+                return expression;
             },
-            .car => return eval(allocator, scope, list[1]).list[0],
-            .cdr => return Expression{ .list = eval(allocator, scope, list[1]).list[1..] },
-            .length => return Expression{ .number = @intCast(eval(allocator, scope, list[1]).list.len) },
-            .null_ => return Expression{ .number = if (eval(allocator, scope, list[1]).list.len == 0) 1 else 0 },
+            .car => return eval(allocator, scope, items.cons.car).cons.car,
+            .cdr => return eval(allocator, scope, items.cons.car).cons.cdr,
+            .length => {
+                var list = eval(allocator, scope, items.cons.car);
+                var length: i32 = 0;
+                while (list != .nil) : (list = list.cons.cdr) {
+                    length += 1;
+                }
+                return Expression{ .number = length };
+            },
+            .null_ => return Expression{ .number = if (eval(allocator, scope, items.cons.car) == .nil) 1 else 0 },
         },
         else => unreachable,
     }
@@ -244,7 +252,8 @@ fn eval(allocator: anytype, scope: *Scope, expression: Expression) Expression {
     return switch (expression) {
         .number => expression,
         .word => |word| scope.get(word).?,
-        .list => |list| if (list.len == 0) expression else evalList(allocator, scope, list),
+        .nil => expression,
+        .cons => |cons| evalCons(allocator, scope, cons.*),
         else => unreachable,
     };
 }
@@ -253,14 +262,17 @@ fn print(stdout: anytype, expression: Expression) void {
     switch (expression) {
         .number => |number| stdout.print("{d}", .{number}) catch unreachable,
         .word => |word| stdout.print("{s}", .{word}) catch unreachable,
-        .list => |list| {
+        .nil => stdout.writeAll("()") catch unreachable,
+        .cons => {
             stdout.writeByte('(') catch unreachable;
-            if (list.len > 0) {
-                print(stdout, list[0]);
-                for (list[1..]) |subexpression| {
-                    stdout.writeByte(' ') catch unreachable;
-                    print(stdout, subexpression);
+            var list = expression;
+            while (true) {
+                print(stdout, list.cons.car);
+                list = list.cons.cdr;
+                if (list == .nil) {
+                    break;
                 }
+                stdout.writeByte(' ') catch unreachable;
             }
             stdout.writeByte(')') catch unreachable;
         },
