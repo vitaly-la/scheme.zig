@@ -45,9 +45,10 @@ const Expression = union(enum) {
 const Scope = struct {
     parent: ?*const Scope,
     store: std.StringHashMap(Expression),
+    function: []const u8,
 
-    fn init(allocator: anytype, parent: ?*const Scope) Scope {
-        return Scope{ .parent = parent, .store = std.StringHashMap(Expression).init(allocator) };
+    fn init(allocator: anytype, parent: ?*const Scope, function: []const u8) Scope {
+        return Scope{ .parent = parent, .store = std.StringHashMap(Expression).init(allocator), .function = function };
     }
 
     fn get(self: Scope, key: []const u8) ?Expression {
@@ -140,122 +141,136 @@ const ExpressionIterator = struct {
     }
 };
 
-fn evalCons(allocator: anytype, scope: *Scope, cons: Cons) Expression {
-    const operation = eval(allocator, scope, cons.car);
-    var items = cons.cdr;
-    switch (operation) {
-        .function => |function| {
-            var functionScope = Scope.init(allocator, scope);
-            var arguments = function.arguments;
-            while (arguments != .nil) {
-                functionScope.put(arguments.cons.car.word, eval(allocator, scope, items.cons.car));
-                arguments = arguments.cons.cdr;
-                items = items.cons.cdr;
-            }
-            return eval(allocator, &functionScope, function.body);
-        },
-        .builtin => |builtin| switch (builtin) {
-            .quote => return items,
-            .define => {
-                switch (items.cons.car) {
-                    .word => |word| {
-                        scope.put(word, eval(allocator, scope, items.cons.cdr.cons.car));
-                        return items.cons.car;
-                    },
-                    .cons => |definition| {
-                        const function = allocator.create(Function) catch unreachable;
-                        function.* = Function{ .name = definition.car.word, .arguments = definition.cdr, .body = items.cons.cdr.cons.car };
-                        scope.put(definition.car.word, Expression{ .function = function });
-                        return definition.car;
-                    },
-                    else => unreachable,
+fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool) Expression {
+    var expression = expression_;
+    while (true) {
+        switch (expression) {
+            .number => return expression,
+            .word => |word| return scope.get(word).?,
+            .nil => return expression,
+            .cons => {},
+            else => unreachable,
+        }
+        const operation = eval(allocator, scope, expression.cons.car, false);
+        var items = expression.cons.cdr;
+        switch (operation) {
+            .function => |function| {
+                if (final and std.mem.eql(u8, function.name, scope.function)) {
+                    var buffer: [128]Expression = undefined;
+                    var arguments = function.arguments;
+                    var idx: usize = 0;
+                    while (arguments != .nil) : (arguments = arguments.cons.cdr) {
+                        buffer[idx] = eval(allocator, scope, items.cons.car, false);
+                        items = items.cons.cdr;
+                        idx += 1;
+                    }
+                    arguments = function.arguments;
+                    idx = 0;
+                    while (arguments != .nil) : (arguments = arguments.cons.cdr) {
+                        scope.put(arguments.cons.car.word, buffer[idx]);
+                        idx += 1;
+                    }
+                    expression = function.body;
+                    continue;
                 }
-            },
-            .if_ => {
-                const condition = eval(allocator, scope, items.cons.car);
-                if (condition.number == 0) {
-                    return eval(allocator, scope, items.cons.cdr.cons.cdr.cons.car);
-                } else {
-                    return eval(allocator, scope, items.cons.cdr.cons.car);
+                var functionScope = Scope.init(allocator, scope, function.name);
+                var arguments = function.arguments;
+                while (arguments != .nil) : (arguments = arguments.cons.cdr) {
+                    functionScope.put(arguments.cons.car.word, eval(allocator, scope, items.cons.car, false));
+                    items = items.cons.cdr;
                 }
+                return eval(allocator, &functionScope, function.body, true);
             },
-            .plus => {
-                var result: i32 = 0;
-                while (items != .nil) : (items = items.cons.cdr) {
-                    const number = eval(allocator, scope, items.cons.car);
-                    result += number.number;
-                }
-                return Expression{ .number = result };
-            },
-            .minus => {
-                var result: i32 = 0;
-                var fst = true;
-                while (items != .nil) : (items = items.cons.cdr) {
-                    const number = eval(allocator, scope, items.cons.car);
-                    if (fst and items.cons.cdr != .nil) {
+            .builtin => |builtin| switch (builtin) {
+                .quote => return items,
+                .define => {
+                    switch (items.cons.car) {
+                        .word => |word| {
+                            scope.put(word, eval(allocator, scope, items.cons.cdr.cons.car, false));
+                            return items.cons.car;
+                        },
+                        .cons => |definition| {
+                            const function = allocator.create(Function) catch unreachable;
+                            function.* = Function{ .name = definition.car.word, .arguments = definition.cdr, .body = items.cons.cdr.cons.car };
+                            scope.put(definition.car.word, Expression{ .function = function });
+                            return definition.car;
+                        },
+                        else => unreachable,
+                    }
+                },
+                .if_ => {
+                    const condition = eval(allocator, scope, items.cons.car, false);
+                    expression = if (condition.number == 0) items.cons.cdr.cons.cdr.cons.car else items.cons.cdr.cons.car;
+                    continue;
+                },
+                .plus => {
+                    var result: i32 = 0;
+                    while (items != .nil) : (items = items.cons.cdr) {
+                        const number = eval(allocator, scope, items.cons.car, false);
                         result += number.number;
-                    } else {
-                        result -= number.number;
                     }
-                    fst = false;
-                }
-                return Expression{ .number = result };
-            },
-            .times => {
-                var result: i32 = 1;
-                while (items != .nil) : (items = items.cons.cdr) {
-                    const number = eval(allocator, scope, items.cons.car);
-                    result *= number.number;
-                }
-                return Expression{ .number = result };
-            },
-            .equals => {
-                const head = eval(allocator, scope, items.cons.car);
-                items = items.cons.cdr;
-                while (items != .nil) : (items = items.cons.cdr) {
-                    const number = eval(allocator, scope, items.cons.car);
-                    if (number.number != head.number) {
-                        return Expression{ .number = 0 };
+                    return Expression{ .number = result };
+                },
+                .minus => {
+                    var result: i32 = 0;
+                    var fst = true;
+                    while (items != .nil) : (items = items.cons.cdr) {
+                        const number = eval(allocator, scope, items.cons.car, false);
+                        if (fst and items.cons.cdr != .nil) {
+                            result += number.number;
+                        } else {
+                            result -= number.number;
+                        }
+                        fst = false;
                     }
-                }
-                return Expression{ .number = 1 };
+                    return Expression{ .number = result };
+                },
+                .times => {
+                    var result: i32 = 1;
+                    while (items != .nil) : (items = items.cons.cdr) {
+                        const number = eval(allocator, scope, items.cons.car, false);
+                        result *= number.number;
+                    }
+                    return Expression{ .number = result };
+                },
+                .equals => {
+                    const head = eval(allocator, scope, items.cons.car, false);
+                    items = items.cons.cdr;
+                    while (items != .nil) : (items = items.cons.cdr) {
+                        const number = eval(allocator, scope, items.cons.car, false);
+                        if (number.number != head.number) {
+                            return Expression{ .number = 0 };
+                        }
+                    }
+                    return Expression{ .number = 1 };
+                },
+                .less => {
+                    const fst = eval(allocator, scope, items.cons.car, false);
+                    const snd = eval(allocator, scope, items.cons.cdr.cons.car, false);
+                    return Expression{ .number = if (fst.number < snd.number) 1 else 0 };
+                },
+                .cons => {
+                    const fst = eval(allocator, scope, items.cons.car, false);
+                    const snd = eval(allocator, scope, items.cons.cdr.cons.car, false);
+                    const list = Expression{ .cons = allocator.create(Cons) catch unreachable };
+                    list.cons.* = Cons{ .car = fst, .cdr = snd };
+                    return list;
+                },
+                .car => return eval(allocator, scope, items.cons.car, false).cons.car,
+                .cdr => return eval(allocator, scope, items.cons.car, false).cons.cdr,
+                .length => {
+                    var list = eval(allocator, scope, items.cons.car, false);
+                    var length: i32 = 0;
+                    while (list != .nil) : (list = list.cons.cdr) {
+                        length += 1;
+                    }
+                    return Expression{ .number = length };
+                },
+                .null_ => return Expression{ .number = if (eval(allocator, scope, items.cons.car, false) == .nil) 1 else 0 },
             },
-            .less => {
-                const fst = eval(allocator, scope, items.cons.car);
-                const snd = eval(allocator, scope, items.cons.cdr.cons.car);
-                return Expression{ .number = if (fst.number < snd.number) 1 else 0 };
-            },
-            .cons => {
-                const fst = eval(allocator, scope, items.cons.car);
-                const snd = eval(allocator, scope, items.cons.cdr.cons.car);
-                const expression = Expression{ .cons = allocator.create(Cons) catch unreachable };
-                expression.cons.* = Cons{ .car = fst, .cdr = snd };
-                return expression;
-            },
-            .car => return eval(allocator, scope, items.cons.car).cons.car,
-            .cdr => return eval(allocator, scope, items.cons.car).cons.cdr,
-            .length => {
-                var list = eval(allocator, scope, items.cons.car);
-                var length: i32 = 0;
-                while (list != .nil) : (list = list.cons.cdr) {
-                    length += 1;
-                }
-                return Expression{ .number = length };
-            },
-            .null_ => return Expression{ .number = if (eval(allocator, scope, items.cons.car) == .nil) 1 else 0 },
-        },
-        else => unreachable,
+            else => unreachable,
+        }
     }
-}
-
-fn eval(allocator: anytype, scope: *Scope, expression: Expression) Expression {
-    return switch (expression) {
-        .number => expression,
-        .word => |word| scope.get(word).?,
-        .nil => expression,
-        .cons => |cons| evalCons(allocator, scope, cons.*),
-        else => unreachable,
-    };
 }
 
 fn print(stdout: anytype, expression: Expression) void {
@@ -290,7 +305,7 @@ pub fn main() void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
-    var scope = Scope.init(allocator, null);
+    var scope = Scope.init(allocator, null, "global");
     for (0..@typeInfo(Builtin).Enum.fields.len) |idx| {
         const builtin: Builtin = @enumFromInt(idx);
         scope.put(builtin.toString(), Expression{ .builtin = builtin });
@@ -304,7 +319,7 @@ pub fn main() void {
 
     var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator };
     while (expressionIterator.next(allocator, stdin)) |expression| {
-        print(stdout, eval(allocator, &scope, expression));
+        print(stdout, eval(allocator, &scope, expression, false));
         stdout.writeByte('\n') catch unreachable;
     }
 }
