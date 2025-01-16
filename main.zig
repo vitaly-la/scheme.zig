@@ -4,19 +4,21 @@ const Builtin = enum {
     quote,
     define,
     if_,
-    plus,
+    sum,
     minus,
-    times,
-    equals,
-    less,
+    product,
+    eq,
+    lt,
+    append,
     cons,
     car,
     cdr,
     length,
     null_,
+    lambda,
 
     fn toString(self: Builtin) []const u8 {
-        const builtins = [_][]const u8{ "quote", "define", "if", "+", "-", "*", "=", "<", "cons", "car", "cdr", "length", "null" };
+        const builtins = [_][]const u8{ "quote", "define", "if", "+", "-", "*", "=", "<", "append", "cons", "car", "cdr", "length", "null", "lambda" };
         return builtins[@intFromEnum(self)];
     }
 };
@@ -203,7 +205,7 @@ fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool)
                     expression = if (condition.number == 0) items.cons.cdr.cons.cdr.cons.car else items.cons.cdr.cons.car;
                     continue;
                 },
-                .plus => {
+                .sum => {
                     var result: i32 = 0;
                     while (items != .nil) : (items = items.cons.cdr) {
                         const number = eval(allocator, scope, items.cons.car, false);
@@ -225,7 +227,7 @@ fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool)
                     }
                     return Expression{ .number = result };
                 },
-                .times => {
+                .product => {
                     var result: i32 = 1;
                     while (items != .nil) : (items = items.cons.cdr) {
                         const number = eval(allocator, scope, items.cons.car, false);
@@ -233,7 +235,8 @@ fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool)
                     }
                     return Expression{ .number = result };
                 },
-                .equals => {
+                .eq => {
+                    if (items == .nil) return Expression{ .number = 1 };
                     const head = eval(allocator, scope, items.cons.car, false);
                     items = items.cons.cdr;
                     while (items != .nil) : (items = items.cons.cdr) {
@@ -244,10 +247,26 @@ fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool)
                     }
                     return Expression{ .number = 1 };
                 },
-                .less => {
+                .lt => {
                     const fst = eval(allocator, scope, items.cons.car, false);
                     const snd = eval(allocator, scope, items.cons.cdr.cons.car, false);
                     return Expression{ .number = if (fst.number < snd.number) 1 else 0 };
+                },
+                .append => {
+                    var list = Expression{ .nil = {} };
+                    var tail = &list;
+
+                    var fst = eval(allocator, scope, items.cons.car, false);
+                    while (fst != .nil) : (fst = fst.cons.cdr) {
+                        const item = Expression{ .cons = allocator.create(Cons) catch unreachable };
+                        item.cons.* = Cons{ .car = fst.cons.car, .cdr = Expression{ .nil = {} } };
+                        tail.* = item;
+                        tail = &item.cons.cdr;
+                    }
+
+                    const snd = eval(allocator, scope, items.cons.cdr.cons.car, false);
+                    tail.* = snd;
+                    return list;
                 },
                 .cons => {
                     const fst = eval(allocator, scope, items.cons.car, false);
@@ -267,6 +286,11 @@ fn eval(allocator: anytype, scope: *Scope, expression_: Expression, final: bool)
                     return Expression{ .number = length };
                 },
                 .null_ => return Expression{ .number = if (eval(allocator, scope, items.cons.car, false) == .nil) 1 else 0 },
+                .lambda => {
+                    const function = allocator.create(Function) catch unreachable;
+                    function.* = Function{ .name = "lambda", .arguments = items.cons.car, .body = items.cons.cdr.cons.car };
+                    return Expression{ .function = function };
+                },
             },
             else => unreachable,
         }
@@ -282,12 +306,18 @@ fn print(stdout: anytype, expression: Expression) void {
             stdout.writeByte('(') catch unreachable;
             var list = expression;
             while (true) {
-                print(stdout, list.cons.car);
-                list = list.cons.cdr;
-                if (list == .nil) {
+                if (list == .cons) {
+                    print(stdout, list.cons.car);
+                    list = list.cons.cdr;
+                    if (list == .nil) {
+                        break;
+                    }
+                    stdout.writeByte(' ') catch unreachable;
+                } else {
+                    stdout.writeAll(". ") catch unreachable;
+                    print(stdout, list);
                     break;
                 }
-                stdout.writeByte(' ') catch unreachable;
             }
             stdout.writeByte(')') catch unreachable;
         },
