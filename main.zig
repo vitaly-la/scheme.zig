@@ -2,9 +2,35 @@ const std = @import("std");
 
 const GLOBAL = -1;
 
+const BUILTINS = [_][]const u8{
+    "quote",
+    "define",
+    "if",
+    "+",
+    "-",
+    "*",
+    "=",
+    "<",
+    "append",
+    "cons",
+    "car",
+    "cdr",
+    "length",
+    "null",
+    "lambda",
+};
+
 const Cons = struct {
     car: Expression,
     cdr: Expression,
+
+    inline fn singleton(arg: Expression) Cons {
+        return Cons{ .car = arg, .cdr = Expression.nil() };
+    }
+
+    inline fn pair(fst: Expression, snd: Expression) Cons {
+        return Cons{ .car = fst, .cdr = snd };
+    }
 };
 
 const Builtin = enum {
@@ -24,9 +50,8 @@ const Builtin = enum {
     null_,
     lambda,
 
-    fn toString(self: Builtin) []const u8 {
-        const builtins = [_][]const u8{ "quote", "define", "if", "+", "-", "*", "=", "<", "append", "cons", "car", "cdr", "length", "null", "lambda" };
-        return builtins[@intFromEnum(self)];
+    inline fn toString(self: Builtin) []const u8 {
+        return BUILTINS[@intFromEnum(self)];
     }
 };
 
@@ -34,6 +59,10 @@ const Function = struct {
     args: Expression,
     body: Expression,
     name: isize,
+
+    inline fn new(args: Expression, body: Expression, name: isize) Function {
+        return Function{ .args = args, .body = body, .name = name };
+    }
 };
 
 const Expression = union(enum) {
@@ -44,6 +73,34 @@ const Expression = union(enum) {
     builtin: Builtin,
     function: *const Function,
     end,
+
+    inline fn number(arg: isize) Expression {
+        return Expression{ .number = arg };
+    }
+
+    inline fn word(arg: isize) Expression {
+        return Expression{ .word = arg };
+    }
+
+    inline fn nil() Expression {
+        return Expression{ .nil = {} };
+    }
+
+    inline fn cons(arg: *Cons) Expression {
+        return Expression{ .cons = arg };
+    }
+
+    inline fn builtin(arg: Builtin) Expression {
+        return Expression{ .builtin = arg };
+    }
+
+    inline fn function(arg: *const Function) Expression {
+        return Expression{ .function = arg };
+    }
+
+    inline fn end() Expression {
+        return Expression{ .end = {} };
+    }
 };
 
 const Scope = struct {
@@ -52,7 +109,11 @@ const Scope = struct {
     function: isize,
 
     fn init(allocator: anytype, parent: ?*Scope, function: isize) Scope {
-        return Scope{ .store = std.AutoHashMap(isize, Expression).init(allocator), .parent = parent, .function = function };
+        return Scope{
+            .store = std.AutoHashMap(isize, Expression).init(allocator),
+            .parent = parent,
+            .function = function,
+        };
     }
 
     fn deinit(self: *Scope) void {
@@ -74,7 +135,11 @@ const SymbolTable = struct {
     idx: isize,
 
     fn init(allocator: anytype) SymbolTable {
-        return SymbolTable{ .table = std.StringHashMap(isize).init(allocator), .reverse = std.AutoHashMap(isize, []const u8).init(allocator), .idx = 0 };
+        return SymbolTable{
+            .table = std.StringHashMap(isize).init(allocator),
+            .reverse = std.AutoHashMap(isize, []const u8).init(allocator),
+            .idx = 0,
+        };
     }
 
     fn get(self: *SymbolTable, key: []const u8) isize {
@@ -152,39 +217,43 @@ const ExpressionIterator = struct {
                 if (subexpression == .end) {
                     break;
                 }
-                arrayList.append(Cons{ .car = subexpression, .cdr = Expression{ .nil = {} } }) catch unreachable;
+                arrayList.append(Cons.singleton(subexpression)) catch unreachable;
             }
             for (0.., arrayList.items) |idx, *item| {
                 if (idx > 0) {
-                    arrayList.items[idx - 1].cdr = Expression{ .cons = item };
+                    arrayList.items[idx - 1].cdr = Expression.cons(item);
                 }
             }
-            return if (arrayList.items.len > 0) Expression{ .cons = &arrayList.items[0] } else Expression{ .nil = {} };
+            if (arrayList.items.len > 0) {
+                return Expression.cons(&arrayList.items[0]);
+            } else {
+                return Expression.nil();
+            }
         }
 
         if (token.?[0] == ')') {
-            return Expression{ .end = {} };
+            return Expression.end();
         }
 
         if (token.?[0] == '\'') {
             const subexpression = self.next(allocator, stdin).?;
-            const item = Expression{ .cons = allocator.create(Cons) catch unreachable };
-            item.cons.* = Cons{ .car = subexpression, .cdr = Expression{ .nil = {} } };
-            const quote = Expression{ .cons = allocator.create(Cons) catch unreachable };
-            quote.cons.* = Cons{ .car = Expression{ .word = self.symbols.get("quote") }, .cdr = item };
+            const item = Expression.cons(allocator.create(Cons) catch unreachable);
+            item.cons.* = Cons.singleton(subexpression);
+            const quote = Expression.cons(allocator.create(Cons) catch unreachable);
+            quote.cons.* = Cons.pair(Expression.word(self.symbols.get("quote")), item);
             return quote;
         }
 
         const number = std.fmt.parseInt(isize, token.?, 10) catch {
             const word = allocator.alloc(u8, token.?.len) catch unreachable;
             std.mem.copyForwards(u8, word, token.?);
-            return Expression{ .word = self.symbols.get(word) };
+            return Expression.word(self.symbols.get(word));
         };
-        return Expression{ .number = number };
+        return Expression.number(number);
     }
 };
 
-fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: Expression, final_: bool) Expression {
+fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: Expression, final_: bool) Expression {
     var scope = scope_;
     var expression = expression_;
     var final = final_;
@@ -197,7 +266,7 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
             .cons => {},
             else => unreachable,
         }
-        const operation = eval(allocator, scope, symbols, expression.cons.car, false);
+        const operation = eval(allocator, symbols, scope, expression.cons.car, false);
         var args = expression.cons.cdr;
         switch (operation) {
             .function => |function| {
@@ -205,7 +274,7 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
                 var fargs = function.args;
                 var idx: usize = 0;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
-                    buffer[idx] = eval(allocator, scope, symbols, args.cons.car, false);
+                    buffer[idx] = eval(allocator, symbols, scope, args.cons.car, false);
                     args = args.cons.cdr;
                     idx += 1;
                 }
@@ -230,36 +299,40 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
                 .define => {
                     switch (args.cons.car) {
                         .word => |word| {
-                            scope.put(word, eval(allocator, scope, symbols, args.cons.cdr.cons.car, false));
+                            scope.put(word, eval(allocator, symbols, scope, args.cons.cdr.cons.car, false));
                             break :ret args.cons.car;
                         },
                         .cons => |definition| {
                             const function = allocator.create(Function) catch unreachable;
-                            function.* = Function{ .args = definition.cdr, .body = args.cons.cdr.cons.car, .name = definition.car.word };
-                            scope.put(definition.car.word, Expression{ .function = function });
+                            function.* = Function.new(definition.cdr, args.cons.cdr.cons.car, definition.car.word);
+                            scope.put(definition.car.word, Expression.function(function));
                             break :ret definition.car;
                         },
                         else => unreachable,
                     }
                 },
                 .if_ => {
-                    const condition = eval(allocator, scope, symbols, args.cons.car, false);
-                    expression = if (condition.number == 0) args.cons.cdr.cons.cdr.cons.car else args.cons.cdr.cons.car;
+                    const condition = eval(allocator, symbols, scope, args.cons.car, false);
+                    if (condition.number == 0) {
+                        expression = args.cons.cdr.cons.cdr.cons.car;
+                    } else {
+                        expression = args.cons.cdr.cons.car;
+                    }
                     continue;
                 },
                 .sum => {
                     var result: isize = 0;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = eval(allocator, scope, symbols, args.cons.car, false);
+                        const number = eval(allocator, symbols, scope, args.cons.car, false);
                         result += number.number;
                     }
-                    break :ret Expression{ .number = result };
+                    break :ret Expression.number(result);
                 },
                 .minus => {
                     var result: isize = 0;
                     var fst = true;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = eval(allocator, scope, symbols, args.cons.car, false);
+                        const number = eval(allocator, symbols, scope, args.cons.car, false);
                         if (fst and args.cons.cdr != .nil) {
                             result += number.number;
                         } else {
@@ -267,36 +340,36 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
                         }
                         fst = false;
                     }
-                    break :ret Expression{ .number = result };
+                    break :ret Expression.number(result);
                 },
                 .product => {
                     var result: isize = 1;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = eval(allocator, scope, symbols, args.cons.car, false);
+                        const number = eval(allocator, symbols, scope, args.cons.car, false);
                         result *= number.number;
                     }
-                    break :ret Expression{ .number = result };
+                    break :ret Expression.number(result);
                 },
                 .eq => {
-                    if (args == .nil) break :ret Expression{ .number = 1 };
-                    const head = eval(allocator, scope, symbols, args.cons.car, false);
+                    if (args == .nil) break :ret Expression.number(1);
+                    const head = eval(allocator, symbols, scope, args.cons.car, false);
                     args = args.cons.cdr;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = eval(allocator, scope, symbols, args.cons.car, false);
+                        const number = eval(allocator, symbols, scope, args.cons.car, false);
                         if (number.number != head.number) {
-                            break :ret Expression{ .number = 0 };
+                            break :ret Expression.number(0);
                         }
                     }
-                    break :ret Expression{ .number = 1 };
+                    break :ret Expression.number(1);
                 },
                 .lt => {
-                    const fst = eval(allocator, scope, symbols, args.cons.car, false);
-                    const snd = eval(allocator, scope, symbols, args.cons.cdr.cons.car, false);
-                    break :ret Expression{ .number = if (fst.number < snd.number) 1 else 0 };
+                    const fst = eval(allocator, symbols, scope, args.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, false);
+                    break :ret Expression.number(if (fst.number < snd.number) 1 else 0);
                 },
                 .append => {
-                    var fst = eval(allocator, scope, symbols, args.cons.car, false);
-                    const snd = eval(allocator, scope, symbols, args.cons.cdr.cons.car, final);
+                    var fst = eval(allocator, symbols, scope, args.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
                     if (fst == .nil) {
                         break :ret snd;
                     }
@@ -305,40 +378,41 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
                     while (fstPtr != .nil) : (fstPtr = fstPtr.cons.cdr) {
                         length += 1;
                     }
-                    var arrayList = std.ArrayList(Cons).init(allocator);
-                    arrayList.resize(length) catch unreachable;
-                    for (0.., arrayList.items) |idx, *item| {
+                    var list = allocator.alloc(Cons, length) catch unreachable;
+                    for (0.., list) |idx, *item| {
                         item.car = fst.cons.car;
                         if (idx > 0) {
-                            arrayList.items[idx - 1].cdr = Expression{ .cons = item };
+                            list[idx - 1].cdr = Expression.cons(item);
                         }
                         fst = fst.cons.cdr;
                     }
-                    arrayList.items[arrayList.items.len - 1].cdr = snd;
-                    break :ret Expression{ .cons = &arrayList.items[0] };
+                    list[list.len - 1].cdr = snd;
+                    break :ret Expression.cons(&list[0]);
                 },
                 .cons => {
-                    const fst = eval(allocator, scope, symbols, args.cons.car, false);
-                    const snd = eval(allocator, scope, symbols, args.cons.cdr.cons.car, final);
-                    const list = Expression{ .cons = allocator.create(Cons) catch unreachable };
-                    list.cons.* = Cons{ .car = fst, .cdr = snd };
-                    break :ret list;
+                    const fst = eval(allocator, symbols, scope, args.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
+                    const pair = Expression.cons(allocator.create(Cons) catch unreachable);
+                    pair.cons.* = Cons.pair(fst, snd);
+                    break :ret pair;
                 },
-                .car => break :ret eval(allocator, scope, symbols, args.cons.car, final).cons.car,
-                .cdr => break :ret eval(allocator, scope, symbols, args.cons.car, final).cons.cdr,
+                .car => break :ret eval(allocator, symbols, scope, args.cons.car, final).cons.car,
+                .cdr => break :ret eval(allocator, symbols, scope, args.cons.car, final).cons.cdr,
                 .length => {
-                    var list = eval(allocator, scope, symbols, args.cons.car, final);
+                    var list = eval(allocator, symbols, scope, args.cons.car, final);
                     var length: isize = 0;
                     while (list != .nil) : (list = list.cons.cdr) {
                         length += 1;
                     }
-                    break :ret Expression{ .number = length };
+                    break :ret Expression.number(length);
                 },
-                .null_ => break :ret Expression{ .number = if (eval(allocator, scope, symbols, args.cons.car, final) == .nil) 1 else 0 },
+                .null_ => break :ret Expression{
+                    .number = if (eval(allocator, symbols, scope, args.cons.car, final) == .nil) 1 else 0,
+                },
                 .lambda => {
                     const function = allocator.create(Function) catch unreachable;
-                    function.* = Function{ .args = args.cons.car, .body = args.cons.cdr.cons.car, .name = symbols.getLambda(allocator) };
-                    break :ret Expression{ .function = function };
+                    function.* = Function.new(args.cons.car, args.cons.cdr.cons.car, symbols.getLambda(allocator));
+                    break :ret Expression.function(function);
                 },
             },
             else => unreachable,
@@ -395,7 +469,7 @@ pub fn main() void {
     for (0..@typeInfo(Builtin).Enum.fields.len) |idx| {
         const builtin: Builtin = @enumFromInt(idx);
         const id = symbols.get(builtin.toString());
-        scope.put(id, Expression{ .builtin = builtin });
+        scope.put(id, Expression.builtin(builtin));
     }
 
     const tokenIterator = TokenIterator{
@@ -406,7 +480,7 @@ pub fn main() void {
 
     var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator, .symbols = symbols };
     while (expressionIterator.next(allocator, stdin)) |expression| {
-        print(stdout, eval(allocator, &scope, &symbols, expression, false), symbols);
+        print(stdout, eval(allocator, &symbols, &scope, expression, false), symbols);
         stdout.writeByte('\n') catch unreachable;
     }
 }
