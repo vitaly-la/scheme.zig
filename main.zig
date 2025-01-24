@@ -11,6 +11,8 @@ const BUILTINS = [_][]const u8{
     "*",
     "=",
     "<",
+    "quotient",
+    "modulo",
     "append",
     "cons",
     "car",
@@ -42,6 +44,8 @@ const Builtin = enum {
     product,
     eq,
     lt,
+    quotient,
+    modulo,
     append,
     cons,
     car,
@@ -364,8 +368,18 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                 },
                 .lt => {
                     const fst = eval(allocator, symbols, scope, args.cons.car, false);
-                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
                     break :ret Expression.number(if (fst.number < snd.number) 1 else 0);
+                },
+                .quotient => {
+                    const fst = eval(allocator, symbols, scope, args.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
+                    break :ret Expression.number(@divTrunc(fst.number, snd.number));
+                },
+                .modulo => {
+                    const fst = eval(allocator, symbols, scope, args.cons.car, false);
+                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
+                    break :ret Expression.number(@mod(fst.number, snd.number));
                 },
                 .append => {
                     var fst = eval(allocator, symbols, scope, args.cons.car, false);
