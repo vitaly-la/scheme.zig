@@ -203,7 +203,7 @@ const TokenIterator = struct {
 
 const ExpressionIterator = struct {
     tokenIterator: TokenIterator,
-    symbols: SymbolTable,
+    symbols: *SymbolTable,
 
     fn next(self: *ExpressionIterator, allocator: anytype, stdin: anytype) ?Expression {
         const token = self.tokenIterator.next(stdin);
@@ -478,7 +478,7 @@ pub fn main() void {
         .word = null,
     };
 
-    var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator, .symbols = symbols };
+    var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator, .symbols = &symbols };
     while (expressionIterator.next(allocator, stdin)) |expression| {
         print(stdout, eval(allocator, &symbols, &scope, expression, false), symbols);
         stdout.writeByte('\n') catch unreachable;
