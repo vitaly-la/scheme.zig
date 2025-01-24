@@ -147,20 +147,19 @@ const ExpressionIterator = struct {
         }
 
         if (token.?[0] == '(') {
-            var list = Expression{ .nil = {} };
-            var tail = &list;
-
+            var arrayList = std.ArrayList(Cons).init(allocator);
             while (self.next(allocator, stdin)) |subexpression| {
                 if (subexpression == .end) {
                     break;
                 }
-                const item = Expression{ .cons = allocator.create(Cons) catch unreachable };
-                item.cons.* = Cons{ .car = subexpression, .cdr = Expression{ .nil = {} } };
-                tail.* = item;
-                tail = &item.cons.cdr;
+                arrayList.append(Cons{ .car = subexpression, .cdr = Expression{ .nil = {} } }) catch unreachable;
             }
-
-            return list;
+            for (0.., arrayList.items) |idx, *item| {
+                if (idx > 0) {
+                    arrayList.items[idx - 1].cdr = Expression{ .cons = item };
+                }
+            }
+            return if (arrayList.items.len > 0) Expression{ .cons = &arrayList.items[0] } else Expression{ .nil = {} };
         }
 
         if (token.?[0] == ')') {
@@ -296,20 +295,27 @@ fn eval(allocator: anytype, scope_: *Scope, symbols: *SymbolTable, expression_: 
                     break :ret Expression{ .number = if (fst.number < snd.number) 1 else 0 };
                 },
                 .append => {
-                    var list = Expression{ .nil = {} };
-                    var tail = &list;
-
                     var fst = eval(allocator, scope, symbols, args.cons.car, false);
-                    while (fst != .nil) : (fst = fst.cons.cdr) {
-                        const item = Expression{ .cons = allocator.create(Cons) catch unreachable };
-                        item.cons.* = Cons{ .car = fst.cons.car, .cdr = Expression{ .nil = {} } };
-                        tail.* = item;
-                        tail = &item.cons.cdr;
-                    }
-
                     const snd = eval(allocator, scope, symbols, args.cons.cdr.cons.car, final);
-                    tail.* = snd;
-                    break :ret list;
+                    if (fst == .nil) {
+                        break :ret snd;
+                    }
+                    var fstPtr = fst;
+                    var length: usize = 0;
+                    while (fstPtr != .nil) : (fstPtr = fstPtr.cons.cdr) {
+                        length += 1;
+                    }
+                    var arrayList = std.ArrayList(Cons).init(allocator);
+                    arrayList.resize(length) catch unreachable;
+                    for (0.., arrayList.items) |idx, *item| {
+                        item.car = fst.cons.car;
+                        if (idx > 0) {
+                            arrayList.items[idx - 1].cdr = Expression{ .cons = item };
+                        }
+                        fst = fst.cons.cdr;
+                    }
+                    arrayList.items[arrayList.items.len - 1].cdr = snd;
+                    break :ret Expression{ .cons = &arrayList.items[0] };
                 },
                 .cons => {
                     const fst = eval(allocator, scope, symbols, args.cons.car, false);
