@@ -223,16 +223,13 @@ const ExpressionIterator = struct {
                 }
                 arrayList.append(Cons.singleton(subexpression)) catch unreachable;
             }
-            for (0.., arrayList.items) |idx, *item| {
-                if (idx > 0) {
+            if (arrayList.items.len > 0) {
+                for (1.., arrayList.items[1..]) |idx, *item| {
                     arrayList.items[idx - 1].cdr = Expression.cons(item);
                 }
-            }
-            if (arrayList.items.len > 0) {
                 return Expression.cons(&arrayList.items[0]);
-            } else {
-                return Expression.nil();
             }
+            return Expression.nil();
         }
 
         if (token.?[0] == ')') {
@@ -241,11 +238,10 @@ const ExpressionIterator = struct {
 
         if (token.?[0] == '\'') {
             const subexpression = self.next(allocator, stdin).?;
-            const item = Expression.cons(allocator.create(Cons) catch unreachable);
-            item.cons.* = Cons.singleton(subexpression);
-            const quote = Expression.cons(allocator.create(Cons) catch unreachable);
-            quote.cons.* = Cons.pair(Expression.word(self.symbols.get("quote")), item);
-            return quote;
+            const quote = allocator.alloc(Cons, 2) catch unreachable;
+            quote[0] = Cons.pair(Expression.word(self.symbols.get("quote")), Expression.cons(&quote[1]));
+            quote[1] = Cons.singleton(subexpression);
+            return Expression.cons(&quote[0]);
         }
 
         const number = std.fmt.parseInt(isize, token.?, 10) catch {
@@ -394,21 +390,17 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                     }
                     var list = allocator.alloc(Cons, length) catch unreachable;
                     for (0.., list) |idx, *item| {
-                        item.car = fst.cons.car;
-                        if (idx > 0) {
-                            list[idx - 1].cdr = Expression.cons(item);
-                        }
+                        item.* = Cons.pair(fst.cons.car, if (idx < list.len - 1) Expression.cons(&list[idx + 1]) else snd);
                         fst = fst.cons.cdr;
                     }
-                    list[list.len - 1].cdr = snd;
                     break :ret Expression.cons(&list[0]);
                 },
                 .cons => {
                     const fst = eval(allocator, symbols, scope, args.cons.car, false);
                     const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
-                    const pair = Expression.cons(allocator.create(Cons) catch unreachable);
-                    pair.cons.* = Cons.pair(fst, snd);
-                    break :ret pair;
+                    const pair = allocator.create(Cons) catch unreachable;
+                    pair.* = Cons.pair(fst, snd);
+                    break :ret Expression.cons(pair);
                 },
                 .car => break :ret eval(allocator, symbols, scope, args.cons.car, final).cons.car,
                 .cdr => break :ret eval(allocator, symbols, scope, args.cons.car, final).cons.cdr,
