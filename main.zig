@@ -157,16 +157,16 @@ const SymbolTable = struct {
         }
     }
 
-    fn str(self: SymbolTable, key: isize) []const u8 {
-        return self.reverse.get(key).?;
-    }
-
     fn getLambda(self: *SymbolTable, allocator: anytype) isize {
         const lambda = std.fmt.allocPrint(allocator, "lambda-{d}", .{self.idx}) catch unreachable;
         self.table.put(lambda, self.idx) catch unreachable;
         self.reverse.put(self.idx, lambda) catch unreachable;
         self.idx += 1;
         return self.idx - 1;
+    }
+
+    fn str(self: SymbolTable, key: isize) []const u8 {
+        return self.reverse.get(key).?;
     }
 };
 
@@ -388,7 +388,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                     while (fstPtr != .nil) : (fstPtr = fstPtr.cons.cdr) {
                         length += 1;
                     }
-                    var list = allocator.alloc(Cons, length) catch unreachable;
+                    const list = allocator.alloc(Cons, length) catch unreachable;
                     for (0.., list) |idx, *item| {
                         item.* = Cons.pair(fst.cons.car, if (idx < list.len - 1) Expression.cons(&list[idx + 1]) else snd);
                         fst = fst.cons.cdr;
@@ -460,12 +460,7 @@ fn print(stdout: anytype, expression: Expression, symbols: SymbolTable) void {
 }
 
 pub fn main() void {
-    const buffer = std.heap.page_allocator.alloc(u8, 16 * 1024 * 1024) catch unreachable;
-    defer std.heap.page_allocator.free(buffer);
-
-    var fba = std.heap.FixedBufferAllocator.init(buffer);
-    const allocator = fba.allocator();
-
+    const allocator = std.heap.c_allocator;
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
