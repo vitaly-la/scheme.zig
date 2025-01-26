@@ -25,6 +25,8 @@ const BUILTINS = [_][]const u8{
     "begin",
     "list",
     "append",
+    "map",
+    "filter",
     "cons",
     "car",
     "cdr",
@@ -69,6 +71,8 @@ const Builtin = enum {
     begin,
     list,
     append,
+    map,
+    filter,
     cons,
     car,
     cdr,
@@ -214,8 +218,9 @@ const TokenIterator = struct {
 
             if (self.word == null or self.word.?.len == 0) {
                 self.word = self.wordIterator.?.next();
-                if (self.word == null) {
+                if (self.word == null or self.word.?[0] == ';') {
                     self.wordIterator = null;
+                    self.word = null;
                     continue;
                 }
             }
@@ -287,9 +292,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
     var free = false;
     const ret = ret: while (true) {
         switch (expression) {
-            .number => break :ret expression,
+            .number, .nil => break :ret expression,
             .word => |word| break :ret scope.get(word).?,
-            .nil => break :ret expression,
             .cons => {},
             else => unreachable,
         }
@@ -469,22 +473,74 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                     break :ret Expression.cons(&list[0]);
                 },
                 .append => {
-                    var fst = eval(allocator, symbols, scope, args.cons.car, false);
-                    const snd = eval(allocator, symbols, scope, args.cons.cdr.cons.car, final);
-                    if (fst == .nil) {
-                        break :ret snd;
+                    if (args == .nil) {
+                        break :ret args;
                     }
-                    var fstPtr = fst;
+                    if (args.cons.cdr == .nil) {
+                        break :ret eval(allocator, symbols, scope, args.cons.car, final);
+                    }
+                    var arrayList = std.ArrayList(Cons).init(allocator);
+                    while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
+                        var arg = eval(allocator, symbols, scope, args.cons.car, false);
+                        while (arg != .nil) : (arg = arg.cons.cdr) {
+                            arrayList.append(Cons.singleton(arg.cons.car)) catch unreachable;
+                        }
+                    }
+                    if (arrayList.items.len == 0) {
+                        arrayList.deinit();
+                        break :ret Expression.nil();
+                    }
+                    for (1.., arrayList.items[1..]) |idx, *item| {
+                        arrayList.items[idx - 1].cdr = Expression.cons(item);
+                    }
+                    arrayList.items[arrayList.items.len - 1].cdr = eval(allocator, symbols, scope, args.cons.car, final);
+                    break :ret Expression.cons(&arrayList.items[0]);
+                },
+                .map => {
+                    var arg = eval(allocator, symbols, scope, args.cons.cdr.cons.car, false);
+                    if (arg == .nil) {
+                        break :ret arg;
+                    }
+                    var argPtr = arg;
                     var length: usize = 0;
-                    while (fstPtr != .nil) : (fstPtr = fstPtr.cons.cdr) {
+                    while (argPtr != .nil) : (argPtr = argPtr.cons.cdr) {
                         length += 1;
                     }
-                    const list = allocator.alloc(Cons, length) catch unreachable;
+                    var list = allocator.alloc(Cons, length) catch unreachable;
                     for (0.., list) |idx, *item| {
-                        item.* = Cons.pair(fst.cons.car, if (idx < list.len - 1) Expression.cons(&list[idx + 1]) else snd);
-                        fst = fst.cons.cdr;
+                        var argument = Cons.singleton(arg.cons.car);
+                        var call = Cons.pair(args.cons.car, Expression.cons(&argument));
+                        if (idx < list.len - 1) {
+                            item.* = Cons.pair(eval(allocator, symbols, scope, Expression.cons(&call), false), Expression.cons(&list[idx + 1]));
+                        } else {
+                            item.* = Cons.pair(eval(allocator, symbols, scope, Expression.cons(&call), final), Expression.nil());
+                        }
+                        arg = arg.cons.cdr;
                     }
                     break :ret Expression.cons(&list[0]);
+                },
+                .filter => {
+                    var arg = eval(allocator, symbols, scope, args.cons.cdr.cons.car, false);
+                    if (arg == .nil) {
+                        break :ret arg;
+                    }
+                    var arrayList = std.ArrayList(Cons).init(allocator);
+                    while (arg != .nil) : (arg = arg.cons.cdr) {
+                        var argument = Cons.singleton(arg.cons.car);
+                        var call = Cons.pair(args.cons.car, Expression.cons(&argument));
+                        const pred = eval(allocator, symbols, scope, Expression.cons(&call), if (arg.cons.cdr != .nil) false else final);
+                        if (pred.number != 0) {
+                            arrayList.append(argument) catch unreachable;
+                        }
+                    }
+                    if (arrayList.items.len == 0) {
+                        arrayList.deinit();
+                        break :ret Expression.nil();
+                    }
+                    for (1.., arrayList.items[1..]) |idx, *item| {
+                        arrayList.items[idx - 1].cdr = Expression.cons(item);
+                    }
+                    break :ret Expression.cons(&arrayList.items[0]);
                 },
                 .cons => {
                     const fst = eval(allocator, symbols, scope, args.cons.car, false);
