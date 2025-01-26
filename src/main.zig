@@ -292,7 +292,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
     var free = false;
     const ret = ret: while (true) {
         switch (expression) {
-            .number, .nil => break :ret expression,
+            .number => break :ret expression,
             .word => |word| break :ret scope.get(word).?,
             .cons => {},
             else => unreachable,
@@ -486,14 +486,15 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                             arrayList.append(Cons.singleton(arg.cons.car)) catch unreachable;
                         }
                     }
+                    const last = eval(allocator, symbols, scope, args.cons.car, final);
                     if (arrayList.items.len == 0) {
                         arrayList.deinit();
-                        break :ret Expression.nil();
+                        break :ret last;
                     }
                     for (1.., arrayList.items[1..]) |idx, *item| {
                         arrayList.items[idx - 1].cdr = Expression.cons(item);
                     }
-                    arrayList.items[arrayList.items.len - 1].cdr = eval(allocator, symbols, scope, args.cons.car, final);
+                    arrayList.items[arrayList.items.len - 1].cdr = last;
                     break :ret Expression.cons(&arrayList.items[0]);
                 },
                 .map => {
