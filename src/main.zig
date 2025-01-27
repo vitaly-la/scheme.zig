@@ -191,11 +191,6 @@ const SymbolTable = struct {
         return self.idx - 1;
     }
 
-    fn getScope(self: *SymbolTable) isize {
-        self.idx += 1;
-        return self.idx - 1;
-    }
-
     fn str(self: SymbolTable, key: isize) []const u8 {
         return self.reverse.get(key).?;
     }
@@ -295,7 +290,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
     var free = false;
     const ret = ret: while (true) {
         switch (expression) {
-            .number => break :ret expression,
+            .number, .nil => break :ret expression,
             .word => |word| if (scope.get(word)) |variable| break :ret variable else return error.UnboundVariable,
             .cons => {},
             else => return error.InvalidSyntax,
@@ -445,13 +440,11 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                     };
                 },
                 .begin => {
-                    var innerScope = Scope.init(allocator, scope, symbols.getScope());
-                    defer innerScope.deinit();
                     while (args != .nil) : (args = args.cons.cdr) {
                         if (args.cons.cdr == .nil) {
-                            break :ret try eval(allocator, symbols, &innerScope, args.cons.car, true);
+                            break :ret try eval(allocator, symbols, scope, args.cons.car, final);
                         } else {
-                            _ = try eval(allocator, symbols, &innerScope, args.cons.car, false);
+                            _ = try eval(allocator, symbols, scope, args.cons.car, false);
                         }
                     }
                 },
