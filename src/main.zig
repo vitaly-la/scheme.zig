@@ -17,12 +17,14 @@ const BUILTINS = [_][]const u8{
     "quote",
     "define",
     "if",
+    "cond",
     "=",
     "<",
     "<=",
     ">",
     ">=",
     "begin",
+    "let",
     "list",
     "append",
     "map",
@@ -63,12 +65,14 @@ const Builtin = enum {
     quote,
     define,
     if_,
+    cond,
     eq,
     lt,
     le,
     gt,
     ge,
     begin,
+    let,
     list,
     append,
     map,
@@ -187,6 +191,11 @@ const SymbolTable = struct {
         const lambda = try std.fmt.allocPrint(allocator, "lambda-{d}", .{self.idx});
         try self.table.put(lambda, self.idx);
         try self.reverse.put(self.idx, lambda);
+        self.idx += 1;
+        return self.idx - 1;
+    }
+
+    fn getScope(self: *SymbolTable) isize {
         self.idx += 1;
         return self.idx - 1;
     }
@@ -417,6 +426,17 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                     }
                     continue;
                 },
+                .cond => {
+                    while (args != .nil) : (args = args.cons.cdr) {
+                        if (args.cons.car.cons.car == .word and args.cons.car.cons.car.word == try symbols.get("else") or
+                            (try eval(allocator, symbols, scope, args.cons.car.cons.car, false)).number != 0)
+                        {
+                            expression = args.cons.car.cons.cdr.cons.car;
+                            continue :ret;
+                        }
+                    }
+                    return error.SyntaxError;
+                },
                 .eq => {
                     if (args == .nil) break :ret Expression.number(1);
                     const head = try eval(allocator, symbols, scope, args.cons.car, false);
@@ -445,6 +465,22 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                             break :ret try eval(allocator, symbols, scope, args.cons.car, final);
                         } else {
                             _ = try eval(allocator, symbols, scope, args.cons.car, false);
+                        }
+                    }
+                },
+                .let => {
+                    var innerScope = Scope.init(allocator, scope, symbols.getScope());
+                    defer innerScope.deinit();
+                    var vars = args.cons.car;
+                    args = args.cons.cdr;
+                    while (vars != .nil) : (vars = vars.cons.cdr) {
+                        try innerScope.put(vars.cons.car.cons.car.word, try eval(allocator, symbols, scope, vars.cons.car.cons.cdr.cons.car, false));
+                    }
+                    while (args != .nil) : (args = args.cons.cdr) {
+                        if (args.cons.cdr == .nil) {
+                            break :ret try eval(allocator, symbols, &innerScope, args.cons.car, final);
+                        } else {
+                            _ = try eval(allocator, symbols, &innerScope, args.cons.car, false);
                         }
                     }
                 },
@@ -567,6 +603,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
             },
             else => return error.InvalidSyntax,
         }
+        return error.InvalidSyntax;
     };
     if (free) {
         const parent = scope.parent.?;
@@ -616,6 +653,8 @@ pub fn main() !void {
         const id = try symbols.get(builtin.toString());
         try scope.put(id, Expression.builtin(builtin));
     }
+    try scope.put(try symbols.get("#f"), Expression.number(0));
+    try scope.put(try symbols.get("#t"), Expression.number(1));
 
     const tokenIterator = TokenIterator{
         .buffer = undefined,
