@@ -41,11 +41,11 @@ const Cons = struct {
     car: Expression,
     cdr: Expression,
 
-    inline fn singleton(arg: Expression) Cons {
+    fn singleton(arg: Expression) Cons {
         return Cons{ .car = arg, .cdr = Expression.nil() };
     }
 
-    inline fn pair(fst: Expression, snd: Expression) Cons {
+    fn pair(fst: Expression, snd: Expression) Cons {
         return Cons{ .car = fst, .cdr = snd };
     }
 };
@@ -84,7 +84,7 @@ const Builtin = enum {
     null_,
     lambda,
 
-    inline fn toString(self: Builtin) []const u8 {
+    fn toString(self: Builtin) []const u8 {
         return BUILTINS[@intFromEnum(self)];
     }
 };
@@ -94,7 +94,7 @@ const Function = struct {
     body: Expression,
     name: isize,
 
-    inline fn new(args: Expression, body: Expression, name: isize) Function {
+    fn new(args: Expression, body: Expression, name: isize) Function {
         return Function{ .args = args, .body = body, .name = name };
     }
 };
@@ -106,33 +106,38 @@ const Expression = union(enum) {
     cons: *Cons,
     builtin: Builtin,
     function: *const Function,
+    empty,
     end,
 
-    inline fn number(arg: isize) Expression {
+    fn number(arg: isize) Expression {
         return Expression{ .number = arg };
     }
 
-    inline fn word(arg: isize) Expression {
+    fn word(arg: isize) Expression {
         return Expression{ .word = arg };
     }
 
-    inline fn nil() Expression {
+    fn nil() Expression {
         return Expression{ .nil = {} };
     }
 
-    inline fn cons(arg: *Cons) Expression {
+    fn cons(arg: *Cons) Expression {
         return Expression{ .cons = arg };
     }
 
-    inline fn builtin(arg: Builtin) Expression {
+    fn builtin(arg: Builtin) Expression {
         return Expression{ .builtin = arg };
     }
 
-    inline fn function(arg: *const Function) Expression {
+    fn function(arg: *const Function) Expression {
         return Expression{ .function = arg };
     }
 
-    inline fn end() Expression {
+    fn empty() Expression {
+        return Expression{ .empty = {} };
+    }
+
+    fn end() Expression {
         return Expression{ .end = {} };
     }
 };
@@ -405,17 +410,18 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                 .define => {
                     switch (args.cons.car) {
                         .word => |word| {
-                            try scope.put(word, try eval(allocator, symbols, scope, args.cons.cdr.cons.car, false));
-                            break :ret args.cons.car;
+                            const value = try eval(allocator, symbols, scope, args.cons.cdr.cons.car, false);
+                            if (value == .empty) return error.InvalidSyntax;
+                            try scope.put(word, value);
                         },
                         .cons => |definition| {
                             const function = try allocator.create(Function);
                             function.* = Function.new(definition.cdr, args.cons.cdr.cons.car, definition.car.word);
                             try scope.put(definition.car.word, Expression.function(function));
-                            break :ret definition.car;
                         },
                         else => return error.InvalidSyntax,
                     }
+                    break :ret Expression.empty();
                 },
                 .if_ => {
                     const condition = try eval(allocator, symbols, scope, args.cons.car, false);
@@ -435,7 +441,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                             continue :ret;
                         }
                     }
-                    return error.SyntaxError;
+                    break :ret Expression.empty();
                 },
                 .eq => {
                     if (args == .nil) break :ret Expression.number(1);
@@ -636,7 +642,7 @@ fn print(stdout: anytype, expression: Expression, symbols: SymbolTable) !void {
         },
         .builtin => |builtin| try stdout.print("#<procedure {s}>", .{builtin.toString()}),
         .function => |function| try stdout.print("#<procedure {s}>", .{symbols.str(function.name)}),
-        .end => return error.InvalidSyntax,
+        .empty, .end => return error.InvalidSyntax,
     }
 }
 
@@ -670,8 +676,11 @@ pub fn main() !void {
             try stdout.writeAll("> ");
             continue;
         };
-        try print(stdout, value, symbols);
-        try stdout.writeAll("\n> ");
+        if (value != .empty) {
+            try print(stdout, value, symbols);
+            try stdout.writeByte('\n');
+        }
+        try stdout.writeAll("> ");
     }
     try stdout.writeAll("\n");
 }
