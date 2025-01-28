@@ -1,6 +1,8 @@
 const std = @import("std");
 
-const GLOBAL = -1;
+const MAXWIDTH = 128;
+const MAXARGS = 16;
+const GLOBAL_SCOPE = -1;
 
 const BUILTINS = [_][]const u8{
     "+",
@@ -142,32 +144,6 @@ const Expression = union(enum) {
     }
 };
 
-const Scope = struct {
-    store: std.AutoHashMap(isize, Expression),
-    parent: ?*Scope,
-    function: isize,
-
-    fn init(allocator: anytype, parent: ?*Scope, function: isize) Scope {
-        return Scope{
-            .store = std.AutoHashMap(isize, Expression).init(allocator),
-            .parent = parent,
-            .function = function,
-        };
-    }
-
-    fn deinit(self: *Scope) void {
-        self.store.deinit();
-    }
-
-    fn get(self: Scope, key: isize) ?Expression {
-        return self.store.get(key) orelse if (self.parent) |parent| parent.get(key) else null;
-    }
-
-    fn put(self: *Scope, key: isize, value: Expression) !void {
-        try self.store.put(key, value);
-    }
-};
-
 const SymbolTable = struct {
     table: std.StringHashMap(isize),
     reverse: std.AutoHashMap(isize, []const u8),
@@ -210,19 +186,42 @@ const SymbolTable = struct {
     }
 };
 
+const Scope = struct {
+    store: std.AutoHashMap(isize, Expression),
+    parent: ?*Scope,
+    function: isize,
+
+    fn init(allocator: anytype, parent: ?*Scope, function: isize) Scope {
+        return Scope{
+            .store = std.AutoHashMap(isize, Expression).init(allocator),
+            .parent = parent,
+            .function = function,
+        };
+    }
+
+    fn deinit(self: *Scope) void {
+        self.store.deinit();
+    }
+
+    fn get(self: Scope, key: isize) ?Expression {
+        return self.store.get(key) orelse if (self.parent) |parent| parent.get(key) else null;
+    }
+
+    fn put(self: *Scope, key: isize, value: Expression) !void {
+        try self.store.put(key, value);
+    }
+};
+
 const TokenIterator = struct {
-    buffer: [128]u8,
+    buffer: [MAXWIDTH]u8,
     wordIterator: ?std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar),
     word: ?[]const u8,
 
     fn next(self: *TokenIterator, stdin: anytype) !?[]const u8 {
         while (true) {
             if (self.wordIterator == null) {
-                const line = try stdin.readUntilDelimiterOrEof(&self.buffer, '\n');
-                if (line == null) {
-                    return null;
-                }
-                self.wordIterator = std.mem.tokenizeScalar(u8, line.?, ' ');
+                const line = if (try stdin.readUntilDelimiterOrEof(&self.buffer, '\n')) |nextLine| nextLine else return null;
+                self.wordIterator = std.mem.tokenizeScalar(u8, line, ' ');
             }
 
             if (self.word == null or self.word.?.len == 0) {
@@ -235,9 +234,9 @@ const TokenIterator = struct {
             }
 
             const word = self.word.?;
-            const left = std.mem.indexOf(u8, word, "(") orelse word.len;
-            const right = std.mem.indexOf(u8, word, ")") orelse word.len;
-            const quote = std.mem.indexOf(u8, word, "'") orelse word.len;
+            const left = std.mem.indexOfScalar(u8, word, '(') orelse word.len;
+            const right = std.mem.indexOfScalar(u8, word, ')') orelse word.len;
+            const quote = std.mem.indexOfScalar(u8, word, '\'') orelse word.len;
             const idx = @max(@min(left, right, quote), 1);
 
             self.word = word[idx..];
@@ -251,12 +250,9 @@ const ExpressionIterator = struct {
     symbols: *SymbolTable,
 
     fn next(self: *ExpressionIterator, allocator: anytype, stdin: anytype) !?Expression {
-        const token = try self.tokenIterator.next(stdin);
-        if (token == null) {
-            return null;
-        }
+        const token = if (try self.tokenIterator.next(stdin)) |nextToken| nextToken else return null;
 
-        if (token.?[0] == '(') {
+        if (token[0] == '(') {
             var arrayList = std.ArrayList(Cons).init(allocator);
             while (try self.next(allocator, stdin)) |subexpression| {
                 if (subexpression == .end) {
@@ -273,24 +269,21 @@ const ExpressionIterator = struct {
             return Expression.nil();
         }
 
-        if (token.?[0] == ')') {
+        if (token[0] == ')') {
             return Expression.end();
         }
 
-        if (token.?[0] == '\'') {
-            const subexpression = (try self.next(allocator, stdin));
-            if (subexpression == null) {
-                return null;
-            }
+        if (token[0] == '\'') {
+            const subexpression = if (try self.next(allocator, stdin)) |nextSubexpression| nextSubexpression else return null;
             const quote = try allocator.alloc(Cons, 2);
             quote[0] = Cons.pair(Expression.word(try self.symbols.get("quote")), Expression.cons(&quote[1]));
-            quote[1] = Cons.singleton(subexpression.?);
+            quote[1] = Cons.singleton(subexpression);
             return Expression.cons(&quote[0]);
         }
 
-        const number = std.fmt.parseInt(isize, token.?, 10) catch {
-            const word = try allocator.alloc(u8, token.?.len);
-            std.mem.copyForwards(u8, word, token.?);
+        const number = std.fmt.parseInt(isize, token, 10) catch {
+            const word = try allocator.alloc(u8, token.len);
+            std.mem.copyForwards(u8, word, token);
             return Expression.word(try self.symbols.get(word));
         };
         return Expression.number(number);
@@ -313,7 +306,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
         var args = expression.cons.cdr;
         switch (operation) {
             .function => |function| {
-                var buffer: [16]Expression = undefined;
+                var buffer: [MAXARGS]Expression = undefined;
                 var fargs = function.args;
                 var idx: usize = 0;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
@@ -416,7 +409,9 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                         },
                         .cons => |definition| {
                             const function = try allocator.create(Function);
-                            function.* = Function.new(definition.cdr, args.cons.cdr.cons.car, definition.car.word);
+                            const body = try allocator.create(Cons);
+                            body.* = Cons.pair(Expression.word(try symbols.get("begin")), args.cons.cdr);
+                            function.* = Function.new(definition.cdr, Expression.cons(body), definition.car.word);
                             try scope.put(definition.car.word, Expression.function(function));
                         },
                         else => return error.InvalidSyntax,
@@ -653,7 +648,7 @@ pub fn main() !void {
 
     var symbols = SymbolTable.init(allocator);
 
-    var scope = Scope.init(allocator, null, GLOBAL);
+    var scope = Scope.init(allocator, null, GLOBAL_SCOPE);
     for (0..@typeInfo(Builtin).Enum.fields.len) |idx| {
         const builtin: Builtin = @enumFromInt(idx);
         const id = try symbols.get(builtin.toString());
@@ -662,6 +657,8 @@ pub fn main() !void {
     try scope.put(try symbols.get("#f"), Expression.number(0));
     try scope.put(try symbols.get("#t"), Expression.number(1));
 
+    try stdout.writeAll("vitaly-la/scheme.zig version 1.0.0\n\n> ");
+
     const tokenIterator = TokenIterator{
         .buffer = undefined,
         .wordIterator = null,
@@ -669,18 +666,19 @@ pub fn main() !void {
     };
 
     var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator, .symbols = &symbols };
-    try stdout.writeAll("vitaly-la/scheme.zig version 1.0.0\n\n> ");
     while (try expressionIterator.next(allocator, stdin)) |expression| {
         const value = eval(allocator, &symbols, &scope, expression, false) catch |err| {
             std.debug.print("{}\n", .{err});
             try stdout.writeAll("> ");
             continue;
         };
-        if (value != .empty) {
-            try print(stdout, value, symbols);
-            try stdout.writeByte('\n');
+        if (value == .empty) {
+            try stdout.writeAll("> ");
+            continue;
         }
-        try stdout.writeAll("> ");
+        try print(stdout, value, symbols);
+        try stdout.writeAll("\n> ");
     }
+
     try stdout.writeAll("\n");
 }
