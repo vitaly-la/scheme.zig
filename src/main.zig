@@ -27,6 +27,7 @@ const BUILTINS = [_][]const u8{
     ">=",
     "begin",
     "let",
+    "let*",
     "list",
     "append",
     "map",
@@ -34,6 +35,8 @@ const BUILTINS = [_][]const u8{
     "cons",
     "car",
     "cdr",
+    "cadr",
+    "cddr",
     "length",
     "null?",
     "lambda",
@@ -75,6 +78,7 @@ const Builtin = enum {
     ge,
     begin,
     let,
+    letStar,
     list,
     append,
     map,
@@ -82,6 +86,8 @@ const Builtin = enum {
     cons,
     car,
     cdr,
+    cadr,
+    cddr,
     length,
     null_,
     lambda,
@@ -469,17 +475,17 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                         }
                     }
                 },
-                .let => {
+                .let, .letStar => {
                     var innerScope = Scope.init(allocator, scope, symbols.getScope());
                     defer innerScope.deinit();
                     var vars = args.cons.car;
                     args = args.cons.cdr;
                     while (vars != .nil) : (vars = vars.cons.cdr) {
-                        try innerScope.put(vars.cons.car.cons.car.word, try eval(allocator, symbols, scope, vars.cons.car.cons.cdr.cons.car, false));
+                        try innerScope.put(vars.cons.car.cons.car.word, try eval(allocator, symbols, if (builtin == .let) scope else &innerScope, vars.cons.car.cons.cdr.cons.car, false));
                     }
                     while (args != .nil) : (args = args.cons.cdr) {
                         if (args.cons.cdr == .nil) {
-                            break :ret try eval(allocator, symbols, &innerScope, args.cons.car, final);
+                            break :ret try eval(allocator, symbols, &innerScope, args.cons.car, false);
                         } else {
                             _ = try eval(allocator, symbols, &innerScope, args.cons.car, false);
                         }
@@ -585,6 +591,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, scope_: *Scope, expression_: 
                 },
                 .car => break :ret (try eval(allocator, symbols, scope, args.cons.car, final)).cons.car,
                 .cdr => break :ret (try eval(allocator, symbols, scope, args.cons.car, final)).cons.cdr,
+                .cadr => break :ret (try eval(allocator, symbols, scope, args.cons.car, final)).cons.cdr.cons.car,
+                .cddr => break :ret (try eval(allocator, symbols, scope, args.cons.car, final)).cons.cdr.cons.cdr,
                 .length => {
                     var list = try eval(allocator, symbols, scope, args.cons.car, final);
                     var length: isize = 0;
