@@ -38,6 +38,8 @@ const BUILTINS = [_][]const u8{
     "cddr",
     "length",
     "null?",
+    "zero?",
+    "eq?",
     "lambda",
 };
 
@@ -89,6 +91,8 @@ const Builtin = enum {
     cddr,
     length,
     null_,
+    zero,
+    eq_,
     lambda,
 
     fn toString(self: Builtin) []const u8 {
@@ -336,7 +340,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 .sum, .product => {
                     var result: isize = if (builtin == .sum) 0 else 1;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const arg = (try eval(allocator, symbols, env, args.cons.car, false)).number;
+                        const arg = (try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false)).number;
                         if (builtin == .sum) {
                             result += arg;
                         } else {
@@ -347,7 +351,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 },
                 .and_, .or_ => {
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const arg = (try eval(allocator, symbols, env, args.cons.car, false)).boolean;
+                        const arg = (try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false)).boolean;
                         if (builtin == .and_ and arg == false) {
                             break :ret Expression.boolean(false);
                         } else if (builtin == .or_ and arg == true) {
@@ -360,7 +364,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     var result: isize = 0;
                     var fst = true;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = try eval(allocator, symbols, env, args.cons.car, false);
+                        const number = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
                         if (fst and args.cons.cdr != .nil) {
                             result += number.number;
                         } else {
@@ -391,7 +395,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     var arg = (try eval(allocator, symbols, env, args.cons.car, false)).number;
                     args = args.cons.cdr;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const other = (try eval(allocator, symbols, env, args.cons.car, false)).number;
+                        const other = (try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false)).number;
                         if (builtin == .min) {
                             arg = if (other < arg) other else arg;
                         } else {
@@ -404,7 +408,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 .define => {
                     switch (args.cons.car) {
                         .word => |word| {
-                            const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car, false);
+                            const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
                             if (value == .empty) return error.InvalidSyntax;
                             try env.put(word, value);
                         },
@@ -440,7 +444,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     const head = try eval(allocator, symbols, env, args.cons.car, false);
                     args = args.cons.cdr;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = try eval(allocator, symbols, env, args.cons.car, false);
+                        const number = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
                         if (number.number != head.number) {
                             break :ret Expression.boolean(false);
                         }
@@ -460,7 +464,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 .begin => {
                     while (args != .nil) : (args = args.cons.cdr) {
                         if (args.cons.cdr == .nil) {
-                            break :ret try eval(allocator, symbols, env, args.cons.car, final);
+                            expression = args.cons.car;
+                            continue :ret;
                         } else {
                             _ = try eval(allocator, symbols, env, args.cons.car, false);
                         }
@@ -476,7 +481,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     }
                     while (args != .nil) : (args = args.cons.cdr) {
                         if (args.cons.cdr == .nil) {
-                            break :ret try eval(allocator, symbols, innerEnv, args.cons.car, false);
+                            break :ret try eval(allocator, symbols, innerEnv, args.cons.car, final);
                         } else {
                             _ = try eval(allocator, symbols, innerEnv, args.cons.car, false);
                         }
@@ -559,7 +564,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     while (arg != .nil) : (arg = arg.cons.cdr) {
                         var argument = Cons.singleton(arg.cons.car);
                         var call = Cons.pair(args.cons.car, Expression.cons(&argument));
-                        const pred = try eval(allocator, symbols, env, Expression.cons(&call), if (arg.cons.cdr != .nil) false else final);
+                        const pred = try eval(allocator, symbols, env, Expression.cons(&call), if (arg.cons.cdr == .nil) final else false);
                         if (pred.number != 0) {
                             try arrayList.append(argument);
                         }
@@ -593,6 +598,12 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     break :ret Expression.number(length);
                 },
                 .null_ => break :ret Expression.boolean(try eval(allocator, symbols, env, args.cons.car, final) == .nil),
+                .zero => break :ret Expression.boolean((try eval(allocator, symbols, env, args.cons.car, final)).number == 0),
+                .eq_ => {
+                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    break :ret Expression.boolean(std.meta.eql(fst, snd));
+                },
                 .lambda => {
                     const function = try allocator.create(Function);
                     const body = try allocator.create(Cons);
