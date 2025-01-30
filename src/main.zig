@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const MAXWIDTH = 128;
-const MAXARGS = 16;
 
 const BUILTINS = [_][]const u8{
     "+",
@@ -324,9 +323,15 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
         var args = expression.cons.cdr;
         switch (operation) {
             .function => |function| {
-                var buffer: [MAXARGS]Expression = undefined;
+                var length: usize = 0;
                 var fargs = function.args;
+                while (fargs != .nil) : (fargs = fargs.cons.cdr) {
+                    length += 1;
+                }
+                var buffer = try allocator.alloc(Expression, length);
+                defer allocator.free(buffer);
                 var idx: usize = 0;
+                fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
                     buffer[idx] = try eval(allocator, symbols, env, args.cons.car, false);
                     args = args.cons.cdr;
@@ -339,8 +344,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     final = true;
                     free = true;
                 }
-                fargs = function.args;
                 idx = 0;
+                fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
                     try env.put(fargs.cons.car.word, buffer[idx]);
                     idx += 1;
