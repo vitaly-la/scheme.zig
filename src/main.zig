@@ -106,9 +106,9 @@ const Builtin = enum {
 const Function = struct {
     args: Expression,
     body: Expression,
-    closure: *Env,
+    closure: *const Env,
 
-    fn new(args: Expression, body: Expression, closure: *Env) Function {
+    fn new(args: Expression, body: Expression, closure: *const Env) Function {
         return Function{ .args = args, .body = body, .closure = closure };
     }
 };
@@ -118,7 +118,7 @@ const Expression = union(enum) {
     boolean: bool,
     symbol: usize,
     nil,
-    cons: *Cons,
+    cons: *const Cons,
     builtin: Builtin,
     function: *const Function,
     empty,
@@ -140,7 +140,7 @@ const Expression = union(enum) {
         return Expression{ .nil = {} };
     }
 
-    fn cons(arg: *Cons) Expression {
+    fn cons(arg: *const Cons) Expression {
         return Expression{ .cons = arg };
     }
 
@@ -198,10 +198,10 @@ const SymbolTable = struct {
 
 const Env = struct {
     store: std.AutoHashMap(usize, Expression),
-    parent: ?*Env,
+    parent: ?*const Env,
     function: ?*const Function,
 
-    fn init(allocator: anytype, parent: ?*Env, function: ?*const Function) Env {
+    fn init(allocator: anytype, parent: ?*const Env, function: ?*const Function) Env {
         return Env{
             .store = std.AutoHashMap(usize, Expression).init(allocator),
             .parent = parent,
@@ -335,9 +335,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     idx += 1;
                 }
                 if (!final or function != env.function) {
-                    const functionEnv = try allocator.create(Env);
-                    functionEnv.* = Env.init(allocator, function.closure, function);
-                    env = functionEnv;
+                    env = try allocator.create(Env);
+                    env.* = Env.init(allocator, function.closure, function);
                     final = true;
                 }
                 idx = 0;
@@ -502,7 +501,6 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                         try innerEnv.put(vars.cons.car.cons.car.symbol, value);
                     }
                     env = innerEnv;
-                    final = true;
                     args = args.cons.cdr;
                     while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
                         _ = try eval(allocator, symbols, env, args.cons.car);
