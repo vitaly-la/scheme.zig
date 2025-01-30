@@ -116,7 +116,7 @@ const Function = struct {
 const Expression = union(enum) {
     number: isize,
     boolean: bool,
-    word: usize,
+    symbol: usize,
     nil,
     cons: *Cons,
     builtin: Builtin,
@@ -132,8 +132,8 @@ const Expression = union(enum) {
         return Expression{ .boolean = arg };
     }
 
-    fn word(arg: usize) Expression {
-        return Expression{ .word = arg };
+    fn symbol(arg: usize) Expression {
+        return Expression{ .symbol = arg };
     }
 
     fn nil() Expression {
@@ -222,33 +222,33 @@ const Env = struct {
 
 const TokenIterator = struct {
     buffer: [MAXWIDTH]u8,
-    wordIterator: ?std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar),
-    word: ?[]const u8,
+    symbolIterator: ?std.mem.TokenIterator(u8, std.mem.DelimiterType.scalar),
+    symbol: ?[]const u8,
 
     fn next(self: *TokenIterator, stdin: anytype) !?[]const u8 {
         while (true) {
-            if (self.wordIterator == null) {
+            if (self.symbolIterator == null) {
                 const line = try stdin.readUntilDelimiterOrEof(&self.buffer, '\n') orelse return null;
-                self.wordIterator = std.mem.tokenizeScalar(u8, line, ' ');
+                self.symbolIterator = std.mem.tokenizeScalar(u8, line, ' ');
             }
 
-            if (self.word == null or self.word.?.len == 0) {
-                self.word = self.wordIterator.?.next();
-                if (self.word == null or self.word.?[0] == ';') {
-                    self.wordIterator = null;
-                    self.word = null;
+            if (self.symbol == null or self.symbol.?.len == 0) {
+                self.symbol = self.symbolIterator.?.next();
+                if (self.symbol == null or self.symbol.?[0] == ';') {
+                    self.symbolIterator = null;
+                    self.symbol = null;
                     continue;
                 }
             }
 
-            const word = self.word.?;
-            const left = std.mem.indexOfScalar(u8, word, '(') orelse word.len;
-            const right = std.mem.indexOfScalar(u8, word, ')') orelse word.len;
-            const quote = std.mem.indexOfScalar(u8, word, '\'') orelse word.len;
+            const symbol = self.symbol.?;
+            const left = std.mem.indexOfScalar(u8, symbol, '(') orelse symbol.len;
+            const right = std.mem.indexOfScalar(u8, symbol, ')') orelse symbol.len;
+            const quote = std.mem.indexOfScalar(u8, symbol, '\'') orelse symbol.len;
             const idx = @max(@min(left, right, quote), 1);
 
-            self.word = word[idx..];
-            return word[0..idx];
+            self.symbol = symbol[idx..];
+            return symbol[0..idx];
         }
     }
 };
@@ -284,42 +284,41 @@ const ExpressionIterator = struct {
         if (token[0] == '\'') {
             const subexpression = try self.next(allocator, stdin) orelse return null;
             const quote = try allocator.alloc(Cons, 2);
-            quote[0] = Cons.pair(Expression.word(try self.symbols.get("quote")), Expression.cons(&quote[1]));
+            quote[0] = Cons.pair(Expression.symbol(try self.symbols.get("quote")), Expression.cons(&quote[1]));
             quote[1] = Cons.singleton(subexpression);
             return Expression.cons(&quote[0]);
         }
 
         const number = std.fmt.parseInt(isize, token, 10) catch {
-            const word = try allocator.alloc(u8, token.len);
-            std.mem.copyForwards(u8, word, token);
-            const symbol = try self.symbols.get(word);
-            if (symbol == try self.symbols.get("#f")) {
+            const symbol = try allocator.alloc(u8, token.len);
+            std.mem.copyForwards(u8, symbol, token);
+            const id = try self.symbols.get(symbol);
+            if (id == try self.symbols.get("#f")) {
                 return Expression.boolean(false);
-            } else if (symbol == try self.symbols.get("#t")) {
+            } else if (id == try self.symbols.get("#t")) {
                 return Expression.boolean(true);
-            } else if (symbol == try self.symbols.get("nil")) {
+            } else if (id == try self.symbols.get("nil")) {
                 return Expression.nil();
             } else {
-                return Expression.word(symbol);
+                return Expression.symbol(id);
             }
         };
         return Expression.number(number);
     }
 };
 
-fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression, final_: bool) !Expression {
+fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression) !Expression {
     var env = env_;
     var expression = expression_;
-    var final = final_;
-    var free = false;
+    var final = false;
     const ret = ret: while (true) {
         switch (expression) {
             .number, .boolean, .nil => break :ret expression,
-            .word => |word| break :ret env.get(word) orelse return error.UnboundVariable,
+            .symbol => |symbol| break :ret env.get(symbol) orelse return error.UnboundVariable,
             .cons => {},
             else => return error.InvalidSyntax,
         }
-        const operation = try eval(allocator, symbols, env, expression.cons.car, false);
+        const operation = try eval(allocator, symbols, env, expression.cons.car);
         var args = expression.cons.cdr;
         switch (operation) {
             .function => |function| {
@@ -333,7 +332,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 var idx: usize = 0;
                 fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
-                    buffer[idx] = try eval(allocator, symbols, env, args.cons.car, false);
+                    buffer[idx] = try eval(allocator, symbols, env, args.cons.car);
                     args = args.cons.cdr;
                     idx += 1;
                 }
@@ -342,29 +341,25 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     functionEnv.* = Env.init(allocator, function.closure, env, function);
                     env = functionEnv;
                     final = true;
-                    free = true;
                 }
                 idx = 0;
                 fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
-                    try env.put(fargs.cons.car.word, buffer[idx]);
+                    try env.put(fargs.cons.car.symbol, buffer[idx]);
                     idx += 1;
                 }
                 var body = function.body;
-                while (body != .nil) : (body = body.cons.cdr) {
-                    if (body.cons.cdr == .nil) {
-                        expression = body.cons.car;
-                        continue :ret;
-                    } else {
-                        _ = try eval(allocator, symbols, env, body.cons.car, false);
-                    }
+                while (body.cons.cdr != .nil) : (body = body.cons.cdr) {
+                    _ = try eval(allocator, symbols, env, body.cons.car);
                 }
+                expression = body.cons.car;
+                continue :ret;
             },
             .builtin => |builtin| switch (builtin) {
                 .plus, .product => {
                     var result: isize = if (builtin == .plus) 0 else 1;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const arg = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
+                        const arg = try eval(allocator, symbols, env, args.cons.car);
                         if (builtin == .plus) {
                             result += arg.number;
                         } else {
@@ -375,7 +370,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 },
                 .and_, .or_ => {
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const arg = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
+                        const arg = try eval(allocator, symbols, env, args.cons.car);
                         if (builtin == .and_ and arg.boolean == false) {
                             break :ret Expression.boolean(false);
                         } else if (builtin == .or_ and arg.boolean == true) {
@@ -388,7 +383,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     var result: isize = 0;
                     var fst = true;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
+                        const number = try eval(allocator, symbols, env, args.cons.car);
                         if (fst and args.cons.cdr != .nil) {
                             result += number.number;
                         } else {
@@ -399,8 +394,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     break :ret Expression.number(result);
                 },
                 .quotient, .modulo, .expt => {
-                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
-                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    const fst = try eval(allocator, symbols, env, args.cons.car);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     switch (builtin) {
                         .quotient => break :ret Expression.number(@divTrunc(fst.number, snd.number)),
                         .modulo => break :ret Expression.number(@mod(fst.number, snd.number)),
@@ -408,18 +403,18 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     }
                 },
                 .abs => {
-                    const arg = try eval(allocator, symbols, env, args.cons.car, final);
+                    const arg = try eval(allocator, symbols, env, args.cons.car);
                     break :ret Expression.number(@max(arg.number, -arg.number));
                 },
                 .not => {
-                    const arg = try eval(allocator, symbols, env, args.cons.car, final);
+                    const arg = try eval(allocator, symbols, env, args.cons.car);
                     break :ret Expression.boolean(!arg.boolean);
                 },
                 .min, .max => {
-                    var arg = (try eval(allocator, symbols, env, args.cons.car, false)).number;
+                    var arg = (try eval(allocator, symbols, env, args.cons.car)).number;
                     args = args.cons.cdr;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const other = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
+                        const other = try eval(allocator, symbols, env, args.cons.car);
                         if (builtin == .min) {
                             arg = @min(arg, other.number);
                         } else {
@@ -431,23 +426,23 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 .quote => break :ret args.cons.car,
                 .define => {
                     switch (args.cons.car) {
-                        .word => |word| {
-                            const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                        .symbol => |symbol| {
+                            const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                             if (value == .empty) return error.InvalidSyntax;
-                            try env.put(word, value);
-                            break :ret Expression.word(word);
+                            try env.put(symbol, value);
+                            break :ret Expression.symbol(symbol);
                         },
                         .cons => |definition| {
                             const function = try allocator.create(Function);
                             function.* = Function.new(definition.cdr, args.cons.cdr, env);
-                            try env.put(definition.car.word, Expression.function(function));
-                            break :ret Expression.word(definition.car.word);
+                            try env.put(definition.car.symbol, Expression.function(function));
+                            break :ret Expression.symbol(definition.car.symbol);
                         },
                         else => return error.InvalidSyntax,
                     }
                 },
                 .if_ => {
-                    const condition = try eval(allocator, symbols, env, args.cons.car, false);
+                    const condition = try eval(allocator, symbols, env, args.cons.car);
                     if (condition.boolean) {
                         expression = args.cons.cdr.cons.car;
                     } else if (args.cons.cdr.cons.cdr != .nil) {
@@ -459,8 +454,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 },
                 .cond => {
                     while (args != .nil) : (args = args.cons.cdr) {
-                        if (args.cons.car.cons.car == .word and args.cons.car.cons.car.word == try symbols.get("else") or
-                            (try eval(allocator, symbols, env, args.cons.car.cons.car, false)).boolean)
+                        if (args.cons.car.cons.car == .symbol and args.cons.car.cons.car.symbol == try symbols.get("else") or
+                            (try eval(allocator, symbols, env, args.cons.car.cons.car)).boolean)
                         {
                             expression = args.cons.car.cons.cdr.cons.car;
                             continue :ret;
@@ -470,10 +465,10 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 },
                 .eq => {
                     if (args == .nil) break :ret Expression.boolean(true);
-                    const head = try eval(allocator, symbols, env, args.cons.car, false);
+                    const head = try eval(allocator, symbols, env, args.cons.car);
                     args = args.cons.cdr;
                     while (args != .nil) : (args = args.cons.cdr) {
-                        const number = try eval(allocator, symbols, env, args.cons.car, if (args.cons.cdr == .nil) final else false);
+                        const number = try eval(allocator, symbols, env, args.cons.car);
                         if (number.number != head.number) {
                             break :ret Expression.boolean(false);
                         }
@@ -481,8 +476,8 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     break :ret Expression.boolean(true);
                 },
                 .lt, .le, .gt, .ge => {
-                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
-                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    const fst = try eval(allocator, symbols, env, args.cons.car);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     break :ret switch (builtin) {
                         .lt => Expression.boolean(fst.number < snd.number),
                         .le => Expression.boolean(fst.number <= snd.number),
@@ -496,7 +491,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                             expression = args.cons.car;
                             continue :ret;
                         } else {
-                            _ = try eval(allocator, symbols, env, args.cons.car, false);
+                            _ = try eval(allocator, symbols, env, args.cons.car);
                         }
                     }
                 },
@@ -505,20 +500,17 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     innerEnv.* = Env.init(allocator, null, env, null);
                     var vars = args.cons.car;
                     while (vars != .nil) : (vars = vars.cons.cdr) {
-                        const value = try eval(allocator, symbols, if (builtin == .let) env else innerEnv, vars.cons.car.cons.cdr.cons.car, false);
-                        try innerEnv.put(vars.cons.car.cons.car.word, value);
+                        const value = try eval(allocator, symbols, if (builtin == .let) env else innerEnv, vars.cons.car.cons.cdr.cons.car);
+                        try innerEnv.put(vars.cons.car.cons.car.symbol, value);
                     }
                     env = innerEnv;
-                    free = true;
+                    final = true;
                     args = args.cons.cdr;
-                    while (args != .nil) : (args = args.cons.cdr) {
-                        if (args.cons.cdr == .nil) {
-                            expression = args.cons.car;
-                            continue :ret;
-                        } else {
-                            _ = try eval(allocator, symbols, env, args.cons.car, false);
-                        }
+                    while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
+                        _ = try eval(allocator, symbols, env, args.cons.car);
                     }
+                    expression = args.cons.car;
+                    continue :ret;
                 },
                 .list => {
                     if (args == .nil) {
@@ -532,9 +524,9 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     const list = try allocator.alloc(Cons, length);
                     for (0.., list) |idx, *item| {
                         if (idx < list.len - 1) {
-                            item.* = Cons.pair(try eval(allocator, symbols, env, args.cons.car, false), Expression.cons(&list[idx + 1]));
+                            item.* = Cons.pair(try eval(allocator, symbols, env, args.cons.car), Expression.cons(&list[idx + 1]));
                         } else {
-                            item.* = Cons.singleton(try eval(allocator, symbols, env, args.cons.car, final));
+                            item.* = Cons.singleton(try eval(allocator, symbols, env, args.cons.car));
                         }
                         args = args.cons.cdr;
                     }
@@ -545,16 +537,16 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                         break :ret args;
                     }
                     if (args.cons.cdr == .nil) {
-                        break :ret try eval(allocator, symbols, env, args.cons.car, final);
+                        break :ret try eval(allocator, symbols, env, args.cons.car);
                     }
                     var arrayList = std.ArrayList(Cons).init(allocator);
                     while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
-                        var arg = try eval(allocator, symbols, env, args.cons.car, false);
+                        var arg = try eval(allocator, symbols, env, args.cons.car);
                         while (arg != .nil) : (arg = arg.cons.cdr) {
                             try arrayList.append(Cons.singleton(arg.cons.car));
                         }
                     }
-                    const last = try eval(allocator, symbols, env, args.cons.car, final);
+                    const last = try eval(allocator, symbols, env, args.cons.car);
                     if (arrayList.items.len == 0) {
                         arrayList.deinit();
                         break :ret last;
@@ -566,7 +558,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     break :ret Expression.cons(&arrayList.items[0]);
                 },
                 .map => {
-                    var arg = try eval(allocator, symbols, env, args.cons.cdr.cons.car, false);
+                    var arg = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     if (arg == .nil) {
                         break :ret arg;
                     }
@@ -580,16 +572,16 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                         var argument = Cons.singleton(arg.cons.car);
                         var call = Cons.pair(args.cons.car, Expression.cons(&argument));
                         if (idx < list.len - 1) {
-                            item.* = Cons.pair(try eval(allocator, symbols, env, Expression.cons(&call), false), Expression.cons(&list[idx + 1]));
+                            item.* = Cons.pair(try eval(allocator, symbols, env, Expression.cons(&call)), Expression.cons(&list[idx + 1]));
                         } else {
-                            item.* = Cons.pair(try eval(allocator, symbols, env, Expression.cons(&call), final), Expression.nil());
+                            item.* = Cons.pair(try eval(allocator, symbols, env, Expression.cons(&call)), Expression.nil());
                         }
                         arg = arg.cons.cdr;
                     }
                     break :ret Expression.cons(&list[0]);
                 },
                 .filter => {
-                    var arg = try eval(allocator, symbols, env, args.cons.cdr.cons.car, false);
+                    var arg = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     if (arg == .nil) {
                         break :ret arg;
                     }
@@ -597,7 +589,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     while (arg != .nil) : (arg = arg.cons.cdr) {
                         var argument = Cons.singleton(arg.cons.car);
                         var call = Cons.pair(args.cons.car, Expression.cons(&argument));
-                        const pred = try eval(allocator, symbols, env, Expression.cons(&call), if (arg.cons.cdr == .nil) final else false);
+                        const pred = try eval(allocator, symbols, env, Expression.cons(&call));
                         if (pred.boolean) {
                             try arrayList.append(argument);
                         }
@@ -612,34 +604,34 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                     break :ret Expression.cons(&arrayList.items[0]);
                 },
                 .cons => {
-                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
-                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    const fst = try eval(allocator, symbols, env, args.cons.car);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     const pair = try allocator.create(Cons);
                     pair.* = Cons.pair(fst, snd);
                     break :ret Expression.cons(pair);
                 },
-                .car => break :ret (try eval(allocator, symbols, env, args.cons.car, final)).cons.car,
-                .cdr => break :ret (try eval(allocator, symbols, env, args.cons.car, final)).cons.cdr,
-                .cadr => break :ret (try eval(allocator, symbols, env, args.cons.car, final)).cons.cdr.cons.car,
-                .cddr => break :ret (try eval(allocator, symbols, env, args.cons.car, final)).cons.cdr.cons.cdr,
+                .car => break :ret (try eval(allocator, symbols, env, args.cons.car)).cons.car,
+                .cdr => break :ret (try eval(allocator, symbols, env, args.cons.car)).cons.cdr,
+                .cadr => break :ret (try eval(allocator, symbols, env, args.cons.car)).cons.cdr.cons.car,
+                .cddr => break :ret (try eval(allocator, symbols, env, args.cons.car)).cons.cdr.cons.cdr,
                 .length => {
-                    var list = try eval(allocator, symbols, env, args.cons.car, final);
+                    var list = try eval(allocator, symbols, env, args.cons.car);
                     var length: isize = 0;
                     while (list != .nil) : (list = list.cons.cdr) {
                         length += 1;
                     }
                     break :ret Expression.number(length);
                 },
-                .null_ => break :ret Expression.boolean(try eval(allocator, symbols, env, args.cons.car, final) == .nil),
-                .zero => break :ret Expression.boolean((try eval(allocator, symbols, env, args.cons.car, final)).number == 0),
+                .null_ => break :ret Expression.boolean(try eval(allocator, symbols, env, args.cons.car) == .nil),
+                .zero => break :ret Expression.boolean((try eval(allocator, symbols, env, args.cons.car)).number == 0),
                 .eq_ => {
-                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
-                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    const fst = try eval(allocator, symbols, env, args.cons.car);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     break :ret Expression.boolean(std.meta.eql(fst, snd));
                 },
                 .equal => {
-                    const fst = try eval(allocator, symbols, env, args.cons.car, false);
-                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car, final);
+                    const fst = try eval(allocator, symbols, env, args.cons.car);
+                    const snd = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                     break :ret Expression.boolean(fst.eql(snd));
                 },
                 .lambda => {
@@ -652,7 +644,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
         }
         return error.InvalidSyntax;
     };
-    if (free) {
+    if (final) {
         env = env.parent.?;
     }
     return ret;
@@ -662,7 +654,7 @@ fn print(stdout: anytype, expression: Expression, symbols: SymbolTable) !void {
     switch (expression) {
         .number => |number| try stdout.print("{d}", .{number}),
         .boolean => |boolean| try stdout.print("{s}", .{if (boolean) "#t" else "#f"}),
-        .word => |word| try stdout.print("{s}", .{symbols.str(word)}),
+        .symbol => |symbol| try stdout.print("{s}", .{symbols.str(symbol)}),
         .nil => try stdout.writeAll("()"),
         .cons => {
             try stdout.writeByte('(');
@@ -703,13 +695,13 @@ pub fn main() !void {
 
     const tokenIterator = TokenIterator{
         .buffer = undefined,
-        .wordIterator = null,
-        .word = null,
+        .symbolIterator = null,
+        .symbol = null,
     };
 
     var expressionIterator = ExpressionIterator{ .tokenIterator = tokenIterator, .symbols = &symbols };
     while (try expressionIterator.next(allocator, stdin)) |expression| {
-        const value = eval(allocator, &symbols, &env, expression, false) catch |err| {
+        const value = eval(allocator, &symbols, &env, expression) catch |err| {
             std.debug.print("{}\n", .{err});
             try stdout.writeAll("> ");
             continue;
