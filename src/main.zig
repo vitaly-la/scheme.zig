@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const MAXWIDTH = 128;
+const MAXARGS = 16;
 
 const BUILTINS = [_][]const u8{
     "+",
@@ -196,14 +197,26 @@ const SymbolTable = struct {
     }
 };
 
+const Context = struct {
+    pub fn hash(_: Context, key: usize) u64 {
+        return @as(u64, key);
+    }
+
+    pub fn eql(_: Context, lhs: usize, rhs: usize) bool {
+        return lhs == rhs;
+    }
+};
+
+const MyHashMap = std.HashMapUnmanaged(usize, Expression, Context, std.hash_map.default_max_load_percentage);
+
 const Env = struct {
-    store: std.AutoHashMap(usize, Expression),
+    store: MyHashMap,
     parent: ?*const Env,
     function: ?*const Function,
 
-    fn init(allocator: anytype, parent: ?*const Env, function: ?*const Function) Env {
+    fn init(parent: ?*const Env, function: ?*const Function) Env {
         return Env{
-            .store = std.AutoHashMap(usize, Expression).init(allocator),
+            .store = MyHashMap{},
             .parent = parent,
             .function = function,
         };
@@ -213,8 +226,8 @@ const Env = struct {
         return self.store.get(key) orelse if (self.parent) |parent| parent.get(key) else null;
     }
 
-    fn put(self: *Env, key: usize, value: Expression) !void {
-        try self.store.put(key, value);
+    fn put(self: *Env, allocator: anytype, key: usize, value: Expression) !void {
+        try self.store.put(allocator, key, value);
     }
 };
 
@@ -320,15 +333,9 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
         var args = expression.cons.cdr;
         switch (operation) {
             .function => |function| {
-                var length: usize = 0;
-                var fargs = function.args;
-                while (fargs != .nil) : (fargs = fargs.cons.cdr) {
-                    length += 1;
-                }
-                var buffer = try allocator.alloc(Expression, length);
-                defer allocator.free(buffer);
+                var buffer: [MAXARGS]Expression = undefined;
                 var idx: usize = 0;
-                fargs = function.args;
+                var fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
                     buffer[idx] = try eval(allocator, symbols, env, args.cons.car);
                     args = args.cons.cdr;
@@ -336,13 +343,13 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 }
                 if (!final or function != env.function) {
                     env = try allocator.create(Env);
-                    env.* = Env.init(allocator, function.closure, function);
+                    env.* = Env.init(function.closure, function);
                     final = true;
                 }
                 idx = 0;
                 fargs = function.args;
                 while (fargs != .nil) : (fargs = fargs.cons.cdr) {
-                    try env.put(fargs.cons.car.symbol, buffer[idx]);
+                    try env.put(allocator, fargs.cons.car.symbol, buffer[idx]);
                     idx += 1;
                 }
                 var body = function.body;
@@ -426,13 +433,13 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                         .symbol => |symbol| {
                             const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
                             if (value == .empty) return error.InvalidSyntax;
-                            try env.put(symbol, value);
+                            try env.put(allocator, symbol, value);
                             return Expression.symbol(symbol);
                         },
                         .cons => |definition| {
                             const function = try allocator.create(Function);
                             function.* = Function.new(definition.cdr, args.cons.cdr, env);
-                            try env.put(definition.car.symbol, Expression.function(function));
+                            try env.put(allocator, definition.car.symbol, Expression.function(function));
                             return Expression.symbol(definition.car.symbol);
                         },
                         else => return error.InvalidSyntax,
@@ -494,11 +501,11 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                 },
                 .let, .letStar => {
                     const innerEnv = try allocator.create(Env);
-                    innerEnv.* = Env.init(allocator, env, null);
+                    innerEnv.* = Env.init(env, null);
                     var vars = args.cons.car;
                     while (vars != .nil) : (vars = vars.cons.cdr) {
                         const value = try eval(allocator, symbols, if (builtin == .let) env else innerEnv, vars.cons.car.cons.cdr.cons.car);
-                        try innerEnv.put(vars.cons.car.cons.car.symbol, value);
+                        try innerEnv.put(allocator, vars.cons.car.cons.car.symbol, value);
                     }
                     env = innerEnv;
                     args = args.cons.cdr;
@@ -676,11 +683,11 @@ pub fn main() !void {
 
     var symbols = SymbolTable.init(allocator);
 
-    var env = Env.init(allocator, null, null);
+    var env = Env.init(null, null);
     for (0..@typeInfo(Builtin).Enum.fields.len) |idx| {
         const builtin: Builtin = @enumFromInt(idx);
         const id = try symbols.get(builtin.toString());
-        try env.put(id, Expression.builtin(builtin));
+        try env.put(allocator, id, Expression.builtin(builtin));
     }
 
     try stdout.writeAll("vitaly-la/scheme.zig version 1.0.0\n\n> ");
