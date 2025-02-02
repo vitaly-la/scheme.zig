@@ -318,7 +318,16 @@ const ExpressionIterator = struct {
     }
 };
 
-fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression) !Expression {
+inline fn eval(allocator: anytype, symbols: *SymbolTable, env: *Env, expression: Expression) !Expression {
+    switch (expression) {
+        .number, .boolean, .nil => return expression,
+        .symbol => |symbol| return env.get(symbol) orelse return error.UnboundVariable,
+        .cons => return evalCons(allocator, symbols, env, expression),
+        else => return error.InvalidSyntax,
+    }
+}
+
+fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression) anyerror!Expression {
     var env = env_;
     var expression = expression_;
     var final = false;
@@ -540,7 +549,7 @@ fn eval(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expr
                         return args;
                     }
                     if (args.cons.cdr == .nil) {
-                        return try eval(allocator, symbols, env, args.cons.car);
+                        return eval(allocator, symbols, env, args.cons.car);
                     }
                     var arrayList = std.ArrayList(Cons).init(allocator);
                     while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
