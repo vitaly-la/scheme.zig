@@ -197,26 +197,26 @@ const SymbolTable = struct {
     }
 };
 
-const Context = struct {
-    pub fn hash(_: Context, key: usize) u64 {
+const IntContext = struct {
+    pub fn hash(_: IntContext, key: usize) u64 {
         return @as(u64, key);
     }
 
-    pub fn eql(_: Context, lhs: usize, rhs: usize) bool {
+    pub fn eql(_: IntContext, lhs: usize, rhs: usize) bool {
         return lhs == rhs;
     }
 };
 
-const MyHashMap = std.HashMapUnmanaged(usize, Expression, Context, std.hash_map.default_max_load_percentage);
+const IntHashMap = std.HashMapUnmanaged(usize, Expression, IntContext, std.hash_map.default_max_load_percentage);
 
 const Env = struct {
-    store: MyHashMap,
+    store: IntHashMap,
     parent: ?*const Env,
     function: ?*const Function,
 
     fn init(parent: ?*const Env, function: ?*const Function) Env {
         return Env{
-            .store = MyHashMap{},
+            .store = IntHashMap{},
             .parent = parent,
             .function = function,
         };
@@ -224,6 +224,19 @@ const Env = struct {
 
     fn get(self: Env, key: usize) ?Expression {
         return self.store.get(key) orelse if (self.parent) |parent| parent.get(key) else null;
+    }
+
+    fn getAndCache(self: *Env, allocator: anytype, key: usize) !Expression {
+        if (self.store.get(key)) |value| {
+            return value;
+        }
+        if (self.parent) |parent| {
+            if (parent.get(key)) |value| {
+                try self.store.put(allocator, key, value);
+                return value;
+            }
+        }
+        return error.UnboundVariable;
     }
 
     fn put(self: *Env, allocator: anytype, key: usize, value: Expression) !void {
@@ -318,23 +331,23 @@ const ExpressionIterator = struct {
     }
 };
 
-inline fn eval(allocator: anytype, symbols: *SymbolTable, env: *Env, expression: Expression) !Expression {
+inline fn eval(allocator: anytype, symbols: *SymbolTable, env: *Env, expression: Expression) anyerror!Expression {
     switch (expression) {
         .number, .boolean, .nil => return expression,
-        .symbol => |symbol| return env.get(symbol) orelse return error.UnboundVariable,
+        .symbol => |symbol| return env.getAndCache(allocator, symbol),
         .cons => return evalCons(allocator, symbols, env, expression),
         else => return error.InvalidSyntax,
     }
 }
 
-fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression) anyerror!Expression {
+fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: Expression) !Expression {
     var env = env_;
     var expression = expression_;
     var final = false;
     outer: while (true) {
         switch (expression) {
             .number, .boolean, .nil => return expression,
-            .symbol => |symbol| return env.get(symbol) orelse return error.UnboundVariable,
+            .symbol => |symbol| return env.getAndCache(allocator, symbol),
             .cons => {},
             else => return error.InvalidSyntax,
         }
@@ -383,6 +396,10 @@ fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: 
                 },
                 .and_, .or_ => {
                     while (args != .nil) : (args = args.cons.cdr) {
+                        if (args.cons.cdr == .nil) {
+                            expression = args.cons.car;
+                            continue :outer;
+                        }
                         const arg = try eval(allocator, symbols, env, args.cons.car);
                         if (builtin == .and_ and arg.boolean == false) {
                             return Expression.boolean(false);
@@ -549,7 +566,8 @@ fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: 
                         return args;
                     }
                     if (args.cons.cdr == .nil) {
-                        return eval(allocator, symbols, env, args.cons.car);
+                        expression = args.cons.car;
+                        continue :outer;
                     }
                     var arrayList = std.ArrayList(Cons).init(allocator);
                     while (args.cons.cdr != .nil) : (args = args.cons.cdr) {
