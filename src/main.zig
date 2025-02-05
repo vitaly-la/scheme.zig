@@ -43,6 +43,7 @@ const BUILTINS = [_][]const u8{
     "eq?",
     "equal?",
     "lambda",
+    "set!",
 };
 
 fn oom() noreturn {
@@ -106,6 +107,7 @@ const Builtin = enum {
     eq_,
     equal,
     lambda,
+    set,
 
     fn toString(self: Builtin) []const u8 {
         return BUILTINS[@intFromEnum(self)];
@@ -115,9 +117,9 @@ const Builtin = enum {
 const Function = struct {
     args: Expression,
     body: Expression,
-    closure: *const Env,
+    closure: *Env,
 
-    fn new(args: Expression, body: Expression, closure: *const Env) Function {
+    fn new(args: Expression, body: Expression, closure: *Env) Function {
         return Function{ .args = args, .body = body, .closure = closure };
     }
 };
@@ -205,6 +207,8 @@ const SymbolTable = struct {
     }
 };
 
+const Point = struct { value: Expression, cached: bool };
+
 const IntContext = struct {
     pub fn hash(_: IntContext, key: usize) u64 {
         return @as(u64, key);
@@ -215,14 +219,14 @@ const IntContext = struct {
     }
 };
 
-const IntHashMap = std.HashMapUnmanaged(usize, Expression, IntContext, std.hash_map.default_max_load_percentage);
+const IntHashMap = std.HashMapUnmanaged(usize, Point, IntContext, std.hash_map.default_max_load_percentage);
 
 const Env = struct {
     store: IntHashMap,
-    parent: ?*const Env,
+    parent: ?*Env,
     function: ?*const Function,
 
-    fn init(parent: ?*const Env, function: ?*const Function) Env {
+    fn init(parent: ?*Env, function: ?*const Function) Env {
         return Env{
             .store = IntHashMap{},
             .parent = parent,
@@ -231,23 +235,41 @@ const Env = struct {
     }
 
     fn get(self: Env, key: usize) !Expression {
-        return self.store.get(key) orelse if (self.parent) |parent| parent.get(key) else return error.UnboundVariable;
+        if (self.store.get(key)) |point| {
+            return point.value;
+        } else if (self.parent) |parent| {
+            return parent.get(key);
+        }
+        return error.UnboundVariable;
     }
 
-    fn getAndCache(self: *Env, allocator: anytype, key: usize) !Expression {
-        if (self.store.get(key)) |value| {
-            return value;
+    fn getCaching(self: *Env, allocator: anytype, key: usize) !Expression {
+        if (self.store.get(key)) |point| {
+            return point.value;
         }
         if (self.parent) |parent| {
             const value = try parent.get(key);
-            self.store.put(allocator, key, value) catch oom();
+            self.store.put(allocator, key, .{ .value = value, .cached = true }) catch oom();
             return value;
         }
         return error.UnboundVariable;
     }
 
     fn put(self: *Env, allocator: anytype, key: usize, value: Expression) void {
-        self.store.put(allocator, key, value) catch oom();
+        self.store.put(allocator, key, .{ .value = value, .cached = false }) catch oom();
+    }
+
+    fn set(self: *Env, allocator: anytype, key: usize, value: Expression) void {
+        if (self.store.get(key)) |point| {
+            if (point.cached) {
+                return self.parent.?.set(allocator, key, value);
+            }
+        } else if (self.parent) |parent| {
+            if (parent.get(key) catch null) |_| {
+                return parent.set(allocator, key, value);
+            }
+        }
+        self.store.put(allocator, key, .{ .value = value, .cached = false }) catch oom();
     }
 };
 
@@ -341,7 +363,7 @@ const ExpressionIterator = struct {
 inline fn eval(allocator: anytype, symbols: *SymbolTable, env: *Env, expression: Expression) !Expression {
     switch (expression) {
         .number, .boolean, .nil => return expression,
-        .symbol => |symbol| return env.getAndCache(allocator, symbol),
+        .symbol => |symbol| return env.getCaching(allocator, symbol),
         .cons => return evalCons(allocator, symbols, env, expression),
         else => return error.InvalidSyntax,
     }
@@ -354,7 +376,7 @@ fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: 
     outer: while (true) {
         switch (expression) {
             .number, .boolean, .nil => return expression,
-            .symbol => |symbol| return env.getAndCache(allocator, symbol),
+            .symbol => |symbol| return env.getCaching(allocator, symbol),
             .cons => {},
             else => return error.InvalidSyntax,
         }
@@ -675,6 +697,12 @@ fn evalCons(allocator: anytype, symbols: *SymbolTable, env_: *Env, expression_: 
                     const function = allocator.create(Function) catch oom();
                     function.* = Function.new(args.cons.car, args.cons.cdr, env);
                     return Expression.function(function);
+                },
+                .set => {
+                    const value = try eval(allocator, symbols, env, args.cons.cdr.cons.car);
+                    if (value == .empty) return error.InvalidSyntax;
+                    env.set(allocator, args.cons.car.symbol, value);
+                    return Expression.empty();
                 },
             },
             else => return error.InvalidSyntax,
