@@ -211,17 +211,56 @@ const SymbolTable = struct {
 
 const Point = struct { value: Expression, cached: bool };
 
-const IntContext = struct {
-    pub fn hash(_: IntContext, key: usize) u64 {
-        return @as(u64, key);
+const Item = struct { key: usize, value: Point };
+
+const IntHashMap = struct {
+    store: []?Item,
+    mask: usize,
+    count: usize,
+    size: usize,
+
+    fn init() IntHashMap {
+        const store = allocator.alloc(?Item, 16) catch oom();
+        @memset(store, null);
+        return IntHashMap{ .store = store, .mask = 15, .count = 0, .size = 16 };
     }
 
-    pub fn eql(_: IntContext, lhs: usize, rhs: usize) bool {
-        return lhs == rhs;
+    fn get(self: IntHashMap, key_: usize) ?Point {
+        var key = key_;
+        while (self.store[key & self.mask]) |item| : (key += 1) {
+            if (item.key == key_) {
+                return item.value;
+            }
+        }
+        return null;
+    }
+
+    fn put(self: *IntHashMap, key_: usize, value: Point) void {
+        var key = key_;
+        while (self.store[key & self.mask]) |item| : (key += 1) {
+            if (item.key == key_) {
+                self.store[key & self.mask] = .{ .key = key_, .value = value };
+                return;
+            }
+        }
+        self.store[key & self.mask] = .{ .key = key_, .value = value };
+        self.count += 1;
+        if (100 * self.count > 80 * self.size) {
+            self.mask = (self.mask << 1) | 1;
+            self.size <<= 1;
+            const newStore = allocator.alloc(?Item, self.size) catch oom();
+            for (self.store) |item_| {
+                if (item_) |item| {
+                    var itemKey = item.key;
+                    while (newStore[itemKey & self.mask]) |_| : (itemKey += 1) {}
+                    newStore[itemKey & self.mask] = item;
+                }
+            }
+            allocator.free(self.store);
+            self.store = newStore;
+        }
     }
 };
-
-const IntHashMap = std.HashMapUnmanaged(usize, Point, IntContext, std.hash_map.default_max_load_percentage);
 
 const Env = struct {
     store: IntHashMap,
@@ -230,7 +269,7 @@ const Env = struct {
 
     fn init(parent: ?*Env, function: ?*const Function) Env {
         return Env{
-            .store = IntHashMap{},
+            .store = IntHashMap.init(),
             .parent = parent,
             .function = function,
         };
@@ -251,14 +290,14 @@ const Env = struct {
         }
         if (self.parent) |parent| {
             const value = try parent.get(key);
-            self.store.put(allocator, key, .{ .value = value, .cached = true }) catch oom();
+            self.store.put(key, .{ .value = value, .cached = true });
             return value;
         }
         return error.UnboundVariable;
     }
 
     fn put(self: *Env, key: usize, value: Expression) void {
-        self.store.put(allocator, key, .{ .value = value, .cached = false }) catch oom();
+        self.store.put(key, .{ .value = value, .cached = false });
     }
 
     fn set(self: *Env, key: usize, value: Expression) void {
@@ -271,7 +310,7 @@ const Env = struct {
                 return parent.set(key, value);
             }
         }
-        self.store.put(allocator, key, .{ .value = value, .cached = false }) catch oom();
+        self.store.put(key, .{ .value = value, .cached = false });
     }
 };
 
