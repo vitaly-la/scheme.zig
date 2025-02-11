@@ -140,6 +140,7 @@ const Expression = union(enum) {
     function: *const Function,
     empty,
     end,
+    endSq,
 
     fn number(arg: isize) Expression {
         return Expression{ .number = arg };
@@ -175,6 +176,10 @@ const Expression = union(enum) {
 
     fn end() Expression {
         return Expression{ .end = {} };
+    }
+
+    fn endSq() Expression {
+        return Expression{ .endSq = {} };
     }
 
     fn eql(self: Expression, rhs: Expression) bool {
@@ -341,9 +346,11 @@ const TokenIterator = struct {
 
             const symbol = self.symbol.?;
             const left = std.mem.indexOfScalar(u8, symbol, '(') orelse symbol.len;
+            const leftSq = std.mem.indexOfScalar(u8, symbol, '[') orelse symbol.len;
             const right = std.mem.indexOfScalar(u8, symbol, ')') orelse symbol.len;
+            const rightSq = std.mem.indexOfScalar(u8, symbol, ']') orelse symbol.len;
             const quote = std.mem.indexOfScalar(u8, symbol, '\'') orelse symbol.len;
-            const idx = @max(@min(left, right, quote), 1);
+            const idx = @max(@min(left, leftSq, right, rightSq, quote), 1);
 
             self.symbol = symbol[idx..];
             return symbol[0..idx];
@@ -358,10 +365,11 @@ const ExpressionIterator = struct {
     fn next(self: *ExpressionIterator, stdin: anytype) ?Expression {
         const token = self.tokenIterator.next(stdin) orelse return null;
 
-        if (token[0] == '(') {
+        if (token[0] == '(' or token[0] == '[') {
+            const bracket = token[0];
             var arrayList = std.ArrayList(Cons).init(allocator);
             while (self.next(stdin)) |subexpression| {
-                if (subexpression == .end) {
+                if (bracket == '(' and subexpression == .end or bracket == '[' and subexpression == .endSq) {
                     break;
                 }
                 arrayList.append(Cons.singleton(subexpression)) catch oom();
@@ -377,6 +385,10 @@ const ExpressionIterator = struct {
 
         if (token[0] == ')') {
             return Expression.end();
+        }
+
+        if (token[0] == ']') {
+            return Expression.endSq();
         }
 
         if (token[0] == '\'') {
@@ -795,7 +807,7 @@ fn print(stdout: anytype, expression: Expression, symbols: SymbolTable) void {
         },
         .builtin => |builtin| stdout.print("#<procedure {s}>", .{builtin.toString()}) catch ioerr(),
         .function => stdout.print("#<procedure>", .{}) catch ioerr(),
-        .empty, .end => std.debug.panic("{} expression must not be printed", .{expression}),
+        .empty, .end, .endSq => std.debug.panic("{} expression must not be printed", .{expression}),
     }
 }
 
