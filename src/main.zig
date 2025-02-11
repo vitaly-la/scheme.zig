@@ -30,9 +30,11 @@ const BUILTINS = [_][]const u8{
     "begin",
     "let",
     "let*",
+    "letrec",
     "list",
     "append",
     "map",
+    "reverse",
     "filter",
     "cons",
     "car",
@@ -94,9 +96,11 @@ const Builtin = enum {
     begin,
     let,
     letStar,
+    letrec,
     list,
     append,
     map,
+    reverse,
     filter,
     cons,
     car,
@@ -595,12 +599,12 @@ fn evalCons(symbols: *SymbolTable, env_: *Env, expression_: Expression) error{ I
                         }
                     }
                 },
-                .let, .letStar => {
+                .let, .letStar, .letrec => {
                     const innerEnv = allocator.create(Env) catch oom();
                     innerEnv.* = Env.init(env, null);
                     var vars = args.cons.car;
                     while (vars != .nil) : (vars = vars.cons.cdr) {
-                        const value = try eval(symbols, if (builtin == .let) env else innerEnv, vars.cons.car.cons.cdr.cons.car);
+                        const value = try eval(symbols, innerEnv, vars.cons.car.cons.cdr.cons.car);
                         innerEnv.put(vars.cons.car.cons.car.symbol, value);
                     }
                     env = innerEnv;
@@ -675,6 +679,24 @@ fn evalCons(symbols: *SymbolTable, env_: *Env, expression_: Expression) error{ I
                         } else {
                             item.* = Cons.pair(try eval(symbols, env, Expression.cons(&call)), Expression.nil());
                         }
+                        arg = arg.cons.cdr;
+                    }
+                    return Expression.cons(&list[0]);
+                },
+                .reverse => {
+                    var arg = try eval(symbols, env, args.cons.car);
+                    if (arg == .nil) {
+                        return arg;
+                    }
+                    var argPtr = arg;
+                    var length: usize = 0;
+                    while (argPtr != .nil) : (argPtr = argPtr.cons.cdr) {
+                        length += 1;
+                    }
+                    var list = allocator.alloc(Cons, length) catch oom();
+                    for (0..length) |idx| {
+                        const revIdx = length - idx - 1;
+                        list[revIdx] = Cons.pair(arg.cons.car, if (revIdx + 1 == length) Expression.nil() else Expression.cons(&list[revIdx + 1]));
                         arg = arg.cons.cdr;
                     }
                     return Expression.cons(&list[0]);
