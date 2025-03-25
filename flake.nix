@@ -1,11 +1,15 @@
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/release-24.11";
   outputs = { self, nixpkgs }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs { inherit system; };
     in
     {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ pkgs.zig ];
+      };
+
       packages.${system}.default = pkgs.stdenv.mkDerivation {
         name = "scheme";
         src = ./.;
