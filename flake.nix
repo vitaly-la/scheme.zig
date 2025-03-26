@@ -6,10 +6,6 @@
       pkgs = import nixpkgs { inherit system; };
     in
     {
-      devShells.${system}.default = pkgs.mkShell {
-        buildInputs = [ pkgs.zig ];
-      };
-
       packages.${system}.default = pkgs.stdenv.mkDerivation {
         name = "scheme";
         src = ./.;
