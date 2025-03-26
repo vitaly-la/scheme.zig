@@ -258,6 +258,7 @@ const IntHashMap = struct {
             self.mask = (self.mask << 1) | 1;
             self.size <<= 1;
             const newStore = allocator.alloc(?Item, self.size) catch oom();
+            @memset(newStore, null);
             for (self.store) |item_| {
                 if (item_) |item| {
                     var itemKey = item.key;
